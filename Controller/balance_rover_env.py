@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-BalanceRoverEnv with softened PID + smoothed torque + on-screen buttons + ω display.
-Run with:
-    python balance_rover_env.py
-
-Hold ←/→ or click-and-hold the Forward/Backward buttons;
-when released, PID takes over to decelerate and re-balance.
+BalanceRoverEnv with PID + keyboard & button drive + live PID tuning + respawn,
+with robust button handling so subsequent presses work correctly.
 """
 
 import sys
 from pathlib import Path
-
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -18,19 +13,13 @@ from mujoco.viewer import glfw
 import tkinter as tk
 
 # —————————————————————————————————————————————————————————
-# TUNING PARAMETERS
-# — PID gains (inner angle loop, gentler than before)
-Kp, Ki, Kd =  80.0, 5.0, 2.0
-
-# Manual drive: torque per key/button
-DRIVE_GAIN      = 0.5    # N·m (was 1.0 before)
-DRIVE_RAMP_RATE = 0.5    # N·m per second (was 1.0)
-
-# Smoothing on total torque: time constant in seconds
-SMOOTH_TAU = 0.05        # higher → slower response
-
-MAX_STEPS  = 200_000
-FALL_THRESH = np.pi * 0.9
+# INITIAL TUNING PARAMETERS (live‐tunable via UI)
+Kp, Ki, Kd = 30.0, 1.0, 0.5
+DRIVE_GAIN      = 0.2    # N·m per button/key press
+DRIVE_RAMP_RATE = 0.2    # N·m per second
+SMOOTH_TAU      = 0.5    # seconds for exponential smoothing
+FALL_THRESH     = np.pi * 0.9
+SIM_DURATION    = 600.0  # seconds of simulation time
 # —————————————————————————————————————————————————————————
 
 class BalanceRoverEnv:
@@ -44,58 +33,142 @@ class BalanceRoverEnv:
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.data  = mujoco.MjData(self.model)
 
-        # manual-drive targets & smoothing state
+        # PID integrator state
+        self.integral      = 0.0
+        self.prev_error    = 0.0
+
+        # manual‐drive pressed flags
+        self.forward_pressed  = False
+        self.backward_pressed = False
+
+        # drive targets & smoothing state
         self.drive_target  = 0.0
         self.drive_current = 0.0
+        self.u_smoothed    = 0.0
 
-        # final filtered torque command
-        self.u_smoothed = 0.0
-
-        # launch MuJoCo GUI
+        # launch MuJoCo window
         self.viewer = mujoco.viewer.launch_passive(
             self.model,
             self.data,
             key_callback=self._key_cb
         )
 
-        # on-screen buttons + ω display
+        # build control UI
         self._init_button_ui()
 
+        # initial perfect respawn
+        self.respawn()
+
     def _init_button_ui(self):
+        """Create Tk window with drive buttons, ω display, PID inputs, and respawn."""
         self.root = tk.Tk()
-        self.root.title("Rover Drive")
+        self.root.title("Rover Drive + PID Tuning")
         self.root.resizable(False, False)
 
+        # Drive buttons
         btn_fwd = tk.Button(self.root, text="Forward",  width=10)
         btn_bwd = tk.Button(self.root, text="Backward", width=10)
         btn_fwd.grid(row=0, column=0, padx=5, pady=5)
         btn_bwd.grid(row=0, column=1, padx=5, pady=5)
 
+        # Angular velocity display
         self.vel_label = tk.Label(self.root, text="ω = 0.000 rad/s", width=20)
-        self.vel_label.grid(row=1, column=0, columnspan=2, pady=(0,5))
+        self.vel_label.grid(row=1, column=0, columnspan=2, pady=(0,10))
 
-        # bind press/release to adjust drive_target
-        btn_fwd.bind("<ButtonPress-1>",
-                     lambda e: setattr(self, 'drive_target',  self.drive_target + DRIVE_GAIN))
-        btn_fwd.bind("<ButtonRelease-1>",
-                     lambda e: setattr(self, 'drive_target',  self.drive_target - DRIVE_GAIN))
-        btn_bwd.bind("<ButtonPress-1>",
-                     lambda e: setattr(self, 'drive_target',  self.drive_target - DRIVE_GAIN))
-        btn_bwd.bind("<ButtonRelease-1>",
-                     lambda e: setattr(self, 'drive_target',  self.drive_target + DRIVE_GAIN))
+        # PID entries
+        tk.Label(self.root, text="Kp:").grid(row=2, column=0, sticky="e")
+        self.entry_Kp = tk.Entry(self.root, width=6)
+        self.entry_Kp.insert(0, str(Kp))
+        self.entry_Kp.grid(row=2, column=1, sticky="w")
+
+        tk.Label(self.root, text="Ki:").grid(row=3, column=0, sticky="e")
+        self.entry_Ki = tk.Entry(self.root, width=6)
+        self.entry_Ki.insert(0, str(Ki))
+        self.entry_Ki.grid(row=3, column=1, sticky="w")
+
+        tk.Label(self.root, text="Kd:").grid(row=4, column=0, sticky="e")
+        self.entry_Kd = tk.Entry(self.root, width=6)
+        self.entry_Kd.insert(0, str(Kd))
+        self.entry_Kd.grid(row=4, column=1, sticky="w")
+
+        # Update PID button
+        btn_update = tk.Button(self.root, text="Update PID Gains", command=self._update_pid)
+        btn_update.grid(row=5, column=0, columnspan=2, pady=(5,5))
+
+        # Respawn button
+        btn_respawn = tk.Button(self.root, text="Respawn Rover", command=self.respawn)
+        btn_respawn.grid(row=6, column=0, columnspan=2, pady=(5,10))
+
+        # Bind drive button events
+        btn_fwd.bind("<ButtonPress-1>",   self._on_fwd_press)
+        btn_fwd.bind("<ButtonRelease-1>", self._on_fwd_release)
+        btn_bwd.bind("<ButtonPress-1>",   self._on_bwd_press)
+        btn_bwd.bind("<ButtonRelease-1>", self._on_bwd_release)
+
+    def _update_pid(self):
+        """Read PID entries and apply new gains."""
+        global Kp, Ki, Kd
+        try:
+            Kp = float(self.entry_Kp.get())
+            Ki = float(self.entry_Ki.get())
+            Kd = float(self.entry_Kd.get())
+            print(f"PID gains updated: Kp={Kp}, Ki={Ki}, Kd={Kd}")
+        except ValueError:
+            print("Invalid PID input! Please enter numeric values.")
+
+    def respawn(self):
+        """Reset rover to upright, stationary state with zero controls."""
+        mujoco.mj_resetData(self.model, self.data)
+        # zero positions, velocities, controls
+        self.data.qpos[:] = 0.0
+        self.data.qvel[:] = 0.0
+        self.data.ctrl[:] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        # reset controller states
+        self.integral      = 0.0
+        self.prev_error    = 0.0
+        self.drive_target  = 0.0
+        self.drive_current = 0.0
+        self.u_smoothed    = 0.0
+        self.forward_pressed  = False
+        self.backward_pressed = False
+
+    def _on_fwd_press(self, event):
+        self.forward_pressed = True
+        self._update_drive_target()
+
+    def _on_fwd_release(self, event):
+        self.forward_pressed = False
+        self._update_drive_target()
+
+    def _on_bwd_press(self, event):
+        self.backward_pressed = True
+        self._update_drive_target()
+
+    def _on_bwd_release(self, event):
+        self.backward_pressed = False
+        self._update_drive_target()
+
+    def _update_drive_target(self):
+        self.drive_target = DRIVE_GAIN * (1 if self.forward_pressed else 0) \
+                          - DRIVE_GAIN * (1 if self.backward_pressed else 0)
 
     def _key_cb(self, window, key, scancode, action, mods):
+        """Handle ←/→ key presses for drive."""
         if key == glfw.KEY_RIGHT:
-            if action == glfw.PRESS:   self.drive_target += DRIVE_GAIN
-            if action == glfw.RELEASE: self.drive_target -= DRIVE_GAIN
+            if action == glfw.PRESS:
+                self.forward_pressed = True
+                self._update_drive_target()
+            elif action == glfw.RELEASE:
+                self.forward_pressed = False
+                self._update_drive_target()
         if key == glfw.KEY_LEFT:
-            if action == glfw.PRESS:   self.drive_target -= DRIVE_GAIN
-            if action == glfw.RELEASE: self.drive_target += DRIVE_GAIN
-
-    def reset(self):
-        mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[3] = 0.02
-        return np.concatenate([self.data.qpos, self.data.qvel])
+            if action == glfw.PRESS:
+                self.backward_pressed = True
+                self._update_drive_target()
+            elif action == glfw.RELEASE:
+                self.backward_pressed = False
+                self._update_drive_target()
 
     def close(self):
         self.viewer.close()
@@ -105,59 +178,55 @@ class BalanceRoverEnv:
 if __name__ == "__main__":
     env = BalanceRoverEnv()
     dt  = env.model.opt.timestep
+    sim_time = 0.0
 
-    integral, prev_error = 0.0, 0.0
-
-    for step in range(MAX_STEPS):
-        # advance physics
+    while sim_time < SIM_DURATION:
         mujoco.mj_step(env.model, env.data)
+        sim_time += dt
 
-        # check stability
         if not np.all(np.isfinite(env.data.qacc)):
-            print(f"Unstable sim at t={step*dt:.4f}s; aborting.")
+            print(f"Numerical instability at t={sim_time:.3f}s; aborting early.")
             break
 
-        # read pendulum angle & ω
-        theta  = env.data.qpos[3]
+        # read pendulum angle & angular velocity
+        theta     = env.data.qpos[3]
         theta_dot = env.data.qvel[3]
-
-        # update on-screen ω
         env.vel_label.config(text=f"ω = {theta_dot:.3f} rad/s")
 
-        # — smooth manual-drive input toward its target —
-        err_drive = env.drive_target - env.drive_current
-        max_delta = DRIVE_RAMP_RATE * dt
-        if abs(err_drive) > max_delta:
-            env.drive_current += np.sign(err_drive) * max_delta
+        # ramp manual drive
+        err_d  = env.drive_target - env.drive_current
+        mdx    = DRIVE_RAMP_RATE * dt
+        if abs(err_d) > mdx:
+            env.drive_current += np.sign(err_d) * mdx
         else:
             env.drive_current = env.drive_target
 
-        # — inner PID on angle → torque command —
-        err       = theta
-        integral += err * dt
-        derivative = (err - prev_error) / dt
-        prev_error = err
-        u_pid     = -(Kp*err + Ki*integral + Kd*derivative)
+        # PID on angle → torque
+        err           = theta
+        env.integral += err * dt
+        derivative     = (err - env.prev_error) / dt
+        env.prev_error = err
+        u_pid          = -(Kp*err + Ki*env.integral + Kd*derivative)
 
-        # — combine PID + drive, then exponential-smooth total —
-        u_target = u_pid + env.drive_current
-        alpha = dt / SMOOTH_TAU
+        # combine & exponential‐smooth
+        u_target       = u_pid + env.drive_current
+        alpha          = dt / SMOOTH_TAU
         env.u_smoothed += alpha * (u_target - env.u_smoothed)
 
-        # clip & send to wheels
-        u = float(np.clip(env.u_smoothed, -3.0, 3.0))
+        # apply to wheels
+        u   = float(np.clip(env.u_smoothed, -3.0, 3.0))
         cmd = u / 3.0
         env.data.ctrl[0] = cmd
         env.data.ctrl[1] = cmd
 
-        # render + handle UI events
+        # render & UI
         env.viewer.sync()
         env.root.update()
 
-        # stop if it falls over
+        # if it falls, just note it but keep running
         if abs(theta) > FALL_THRESH:
-            print(f"Fallen at t={step*dt:.3f}s (θ={theta:.3f} rad)")
-            break
+            print(f"Fallen at t={sim_time:.3f}s (θ={theta:.3f} rad)")
 
-    input("Simulation ended. Press Enter to close…")
+    print("Simulation time reached.")
+    input("Press Enter to close…")
     env.close()
