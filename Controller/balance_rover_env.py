@@ -18,10 +18,19 @@ import tkinter as tk
 from pid_controller import (
     DualPID,
     Kp_ang, Ki_ang, Kd_ang,
+    Kp_vel, Ki_vel, Kd_vel,
     DRIVE_GAIN, DRIVE_RAMP_RATE,
     SMOOTH_TAU, FALL_THRESH,
     SIM_DURATION
 )
+
+# Default initial pole tilt (deg)
+INITIAL_ANGLE = 10.0
+# Dead-band angle around vertical to ignore (deg)
+DEAD_BAND_ANGLE = 1.0
+# Manual drive decay and overshoot rate (N·m per second)
+OVERSHOOT_RATE = 0.05
+
 
 class BalanceRoverEnv:
     def __init__(self):
@@ -30,32 +39,30 @@ class BalanceRoverEnv:
             print("Error: balance_rover.xml not found.")
             sys.exit(1)
 
-        # load model & data
+        # Load model & data
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.data  = mujoco.MjData(self.model)
 
-        # find hinge qpos index
+        # Find hinge joint qpos index
         jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'hinge')
         self.hinge_qposadr = self.model.jnt_qposadr[jid]
 
         # PID controller with imported defaults
         self.pid = DualPID(Kp_ang, Ki_ang, Kd_ang)
 
-        # state variables
-        self.forward_pressed = False
-        self.backward_pressed = False
-        self.drive_target = 0.0
-        self.drive_current = 0.0
+        # State variables
+        self.drive_current = 0.0  # holds impulse torque
         self.u_smoothed = 0.0
 
-        # launch viewer
+        # Launch viewer
         self.viewer = mujoco.viewer.launch_passive(
-            self.model, self.data, key_callback=self._key_cb)
+            self.model, self.data, key_callback=self._key_cb
+        )
 
-        # build UI
+        # Build UI
         self._init_button_ui()
 
-        # initial respawn
+        # Initial respawn
         self.respawn()
 
     def _init_button_ui(self):
@@ -75,148 +82,120 @@ class BalanceRoverEnv:
         self.angle_label = tk.Label(self.root, text="Angle = 0.00°", width=20)
         self.angle_label.grid(row=row, column=0, columnspan=2, pady=(0,10))
 
-        # Parameter specifications: (label, attribute, scope)
+        # Parameter specs
         param_specs = [
             ("Kp", 'Kp', 'pid'),
             ("Ki", 'Ki', 'pid'),
             ("Kd", 'Kd', 'pid'),
+            ("Kp_vel", 'Kp_vel', 'global'),
+            ("Ki_vel", 'Ki_vel', 'global'),
+            ("Kd_vel", 'Kd_vel', 'global'),
             ("Drive Gain", 'DRIVE_GAIN', 'global'),
-            ("Drive Ramp", 'DRIVE_RAMP_RATE', 'global'),
             ("Smooth Tau", 'SMOOTH_TAU', 'global'),
             ("Fall Threshold", 'FALL_THRESH', 'global'),
-            ("Sim Duration", 'SIM_DURATION', 'global')
+            ("Sim Duration", 'SIM_DURATION', 'global'),
+            ("Initial Angle (deg)", 'INITIAL_ANGLE', 'global'),
+            ("Overshoot Rate", 'OVERSHOOT_RATE', 'global')
         ]
         self.entries = {}
         for name, attr, scope in param_specs:
             row += 1
             tk.Label(self.root, text=f"{name}:").grid(row=row, column=0, sticky="e")
             entry = tk.Entry(self.root, width=8)
-            if scope == 'pid':
-                value = getattr(self.pid, attr)
-            else:
-                value = globals()[attr]
-            entry.insert(0, str(value))
+            val = getattr(self.pid, attr) if scope=='pid' else globals()[attr]
+            entry.insert(0, str(val))
             entry.grid(row=row, column=1, sticky="w")
             self.entries[(scope, attr)] = entry
 
-        # Update Params button
+        # Update & Respawn buttons
         row += 1
         tk.Button(self.root, text="Update Params", command=self._update_params).grid(
             row=row, column=0, columnspan=2, pady=(5,5)
         )
-        # Respawn button
         row += 1
         tk.Button(self.root, text="Respawn Rover", command=self.respawn).grid(
             row=row, column=0, columnspan=2, pady=(5,10)
         )
 
-        # Bind drive button events
+        # Bind drive buttons
         btn_fwd.bind("<ButtonPress-1>", self._on_fwd_press)
-        btn_fwd.bind("<ButtonRelease-1>", self._on_fwd_release)
         btn_bwd.bind("<ButtonPress-1>", self._on_bwd_press)
-        btn_bwd.bind("<ButtonRelease-1>", self._on_bwd_release)
 
     def _update_params(self):
         try:
             for (scope, attr), entry in self.entries.items():
                 val = float(entry.get())
-                if scope == 'pid':
-                    setattr(self.pid, attr, val)
-                else:
-                    globals()[attr] = val
+                if scope=='pid': setattr(self.pid, attr, val)
+                else: globals()[attr]=val
             print("Parameters updated.")
         except ValueError:
             print("Invalid input; please enter numeric values.")
 
     def respawn(self):
-        # Reset simulation state and tilt pole to 10° from vertical
+        # Reset simulation & tilt
         mujoco.mj_resetData(self.model, self.data)
         self.data.qpos[:] = 0.0
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
-        self.data.qpos[self.hinge_qposadr] = np.deg2rad(0.0)
+        self.data.qpos[self.hinge_qposadr] = np.deg2rad(INITIAL_ANGLE)
         mujoco.mj_forward(self.model, self.data)
 
-        # Reset controller and drive states
+        # Reset controller & drive
         self.pid.reset()
-        self.drive_target = 0.0
         self.drive_current = 0.0
         self.u_smoothed = 0.0
-        self.forward_pressed = False
-        self.backward_pressed = False
 
     def _on_fwd_press(self, event):
-        self.forward_pressed = True
-        self._update_drive_target()
-    def _on_fwd_release(self, event):
-        self.forward_pressed = False
-        self._update_drive_target()
+        # One-time forward torque impulse
+        self.drive_current += DRIVE_GAIN
     def _on_bwd_press(self, event):
-        self.backward_pressed = True
-        self._update_drive_target()
-    def _on_bwd_release(self, event):
-        self.backward_pressed = False
-        self._update_drive_target()
-
-    def _update_drive_target(self):
-        # Manual drive inversion: pressing forward applies negative torque
-        self.drive_target = DRIVE_GAIN * (1 if self.backward_pressed else 0) \
-                          - DRIVE_GAIN * (1 if self.forward_pressed else 0)
+        # One-time backward torque impulse
+        self.drive_current -= DRIVE_GAIN
 
     def _key_cb(self, window, key, scancode, action, mods):
-        # Keyboard drive mapping
-        if key == glfw.KEY_RIGHT:
-            self.forward_pressed = (action == glfw.PRESS)
-        if key == glfw.KEY_LEFT:
-            self.backward_pressed = (action == glfw.PRESS)
-        self._update_drive_target()
+        # no keyboard drive
+        pass
 
     def run(self):
         dt = self.model.opt.timestep
-        sim_time = 0.0
-        while sim_time < SIM_DURATION:
-            mujoco.mj_step(self.model, self.data)
-            sim_time += dt
-
-            # Read pole angle and velocity
+        t = 0.0
+        while t < SIM_DURATION:
+            mujoco.mj_step(self.model, self.data); t+=dt
             theta = self.data.qpos[self.hinge_qposadr]
             theta_dot = self.data.qvel[self.hinge_qposadr]
 
-            # PID control torque (positive => rotate pole back upright)
-            u_pid = self.pid.update(theta, theta_dot, dt, self.u_smoothed, (-3.0, 3.0))
+                        # PID torque
+            u_pid = self.pid.update(theta, theta_dot, dt, self.u_smoothed, (-300000,300000))
 
-            # Manual drive ramping
-            err_d = self.drive_target - self.drive_current
-            ramp = min(abs(err_d), DRIVE_RAMP_RATE * dt)
-            self.drive_current += np.sign(err_d) * ramp
+            # Apply manual drive decay with overshoot
+            if self.drive_current != 0.0:
+                dec = OVERSHOOT_RATE * dt
+                if abs(self.drive_current) > dec:
+                    self.drive_current -= np.sign(self.drive_current) * dec
+                else:
+                    # overshoot bounce
+                    self.drive_current = -np.sign(self.drive_current) * (dec - abs(self.drive_current))
 
-            # Combine and smooth
+            # Combine & smooth
             u_target = u_pid + self.drive_current
-            alpha = dt / SMOOTH_TAU
-            self.u_smoothed += alpha * (u_target - self.u_smoothed)
+            self.u_smoothed += (dt/SMOOTH_TAU)*(u_target-self.u_smoothed)
 
-            # Apply controls
-            cmd = float(np.clip(self.u_smoothed, -3.0, 3.0)) / 3.0
-            self.data.ctrl[0] = cmd
-            self.data.ctrl[1] = cmd
+            # Apply
+            cmd = float(np.clip(self.u_smoothed))
+            self.data.ctrl[0]=cmd; self.data.ctrl[1]=cmd
 
-            # Update UI
+            # UI update
             self.angle_label.config(text=f"Angle = {np.rad2deg(theta):.2f}°")
-            self.viewer.sync()
-            self.root.update()
+            self.viewer.sync(); self.root.update()
 
-            # Log falls
-            if abs(theta) > FALL_THRESH:
-                print(f"Fallen at t={sim_time:.3f}s (θ={theta:.3f} rad)")
-
+            if abs(theta)>FALL_THRESH:
+                print(f"Fallen at t={t:.3f}s")
         print("Simulation complete.")
         input("Press Enter to close…")
         self.close()
 
     def close(self):
-        self.viewer.close()
-        self.root.destroy()
+        self.viewer.close(); self.root.destroy()
 
-if __name__ == "__main__":
-    env = BalanceRoverEnv()
-    env.run()
+if __name__=="__main__":
+    BalanceRoverEnv().run()

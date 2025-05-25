@@ -3,6 +3,8 @@
 BalanceRoverEnv with dual-loop PID + advanced control features:
 1. Anti-Windup
 2. Derivative Filtering
+3. Reduced Dead-Band to allow small overshoot
+4. Bias Term to encourage slight overshoot
 5. Dead-Band/Hysteresis
 7. Cascade Structure (angle→velocity→torque)
 10. Soft-Start & Ramp-Limits
@@ -30,12 +32,15 @@ SMOOTH_TAU      = 0.5    # seconds for exp smoothing
 FALL_THRESH     = np.pi * 0.9
 SIM_DURATION    = 600.0  # seconds
 
-# Dead-band threshold (rad)
-DEAD_BAND = np.deg2rad(1.0)
+# Dead-band threshold (rad) — reduced to allow small overshoot
+DEAD_BAND = np.deg2rad(0.1)
 # Derivative filter time constant (s)
-DERIV_TAU = 0.05
+DERIV_TAU = 0.02
 # Control rate limit (unit/sec) for soft-start
 CMD_RATE_LIMIT = 1.0
+# Overshoot bias magnitude
+OVERSHOOT_BIAS = 0.10
+# —————————————————————————————————————————————————————————
 
 class DualPID:
     def __init__(self, Kp, Ki, Kd):
@@ -52,9 +57,11 @@ class DualPID:
         self.d_filtered = 0.0
 
     def update(self, error, measurement_dot, dt, output, output_limits):
-        # Dead-band
+        # Dead-band: only clamp out extremely tiny errors
         if abs(error) < DEAD_BAND:
-            error = 0.0
+            # allow pass-through for small errors to create overshoot
+            pass
+
         # Integral with anti-windup: only integrate if not saturated
         u_unsat = self.Kp * error + self.Ki * self.integral + self.Kd * ((error - self.prev_error) / dt)
         # derivative raw
@@ -67,10 +74,13 @@ class DualPID:
             self.integral += error * dt
         # PID calculation with filtered derivative
         u = self.Kp * error + self.Ki * self.integral + self.Kd * self.d_filtered
+        # optional slight bias for overshoot
+        u += OVERSHOOT_BIAS * np.sign(error)
         # saturate
         u_sat = np.clip(u, output_limits[0], output_limits[1])
         self.prev_error = error
         return u_sat
+
 
 class BalanceRoverEnv:
     def __init__(self):
