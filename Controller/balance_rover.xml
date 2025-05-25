@@ -46,14 +46,14 @@
 
       <!-- Pendulum pole -->
       <body name="pole" pos="0 0 0.04">
-        <joint name="hinge" type="hinge" axis="0 1 0"
-               damping="0.05" range="-3.14 3.14"/>
-        <geom  type="capsule"
-               fromto="0 0 0   0 0 0.5"
-               size="0.02"
-               rgba="0.8 0.3 0.3 1"/>
+        <joint name="hinge" type="hinge" axis="0 1 0" damping="0.0" limited="false"/>
+        <geom type="capsule"
+              fromto="0 0 0  0 0 0.5"
+              size="0.02"
+              rgba="0.8 0.3 0.3 1"/>
       </body>
-    </body>
+
+    </body> <!-- Missing closing tag for base added here -->
   </worldbody>
 
   <actuator>

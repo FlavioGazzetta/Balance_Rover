@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 BalanceRoverEnv with PID + keyboard & button drive + live PID tuning + respawn,
-with robust button handling so subsequent presses work correctly.
+starting with the pole at 80° from the ground (10° from vertical), and displaying
+the current angle relative to the vertical upward normal.
 """
 
 import sys
@@ -13,7 +14,7 @@ from mujoco.viewer import glfw
 import tkinter as tk
 
 # —————————————————————————————————————————————————————————
-# INITIAL TUNING PARAMETERS (live‐tunable via UI)
+# INITIAL TUNING PARAMETERS (live-tunable via UI)
 Kp, Ki, Kd = 30.0, 1.0, 0.5
 DRIVE_GAIN      = 0.2    # N·m per button/key press
 DRIVE_RAMP_RATE = 0.2    # N·m per second
@@ -34,10 +35,10 @@ class BalanceRoverEnv:
         self.data  = mujoco.MjData(self.model)
 
         # PID integrator state
-        self.integral      = 0.0
-        self.prev_error    = 0.0
+        self.integral   = 0.0
+        self.prev_error = 0.0
 
-        # manual‐drive pressed flags
+        # manual-drive pressed flags
         self.forward_pressed  = False
         self.backward_pressed = False
 
@@ -60,7 +61,7 @@ class BalanceRoverEnv:
         self.respawn()
 
     def _init_button_ui(self):
-        """Create Tk window with drive buttons, ω display, PID inputs, and respawn."""
+        """Create Tk window with drive buttons, angle display, PID inputs, and respawn."""
         self.root = tk.Tk()
         self.root.title("Rover Drive + PID Tuning")
         self.root.resizable(False, False)
@@ -71,9 +72,9 @@ class BalanceRoverEnv:
         btn_fwd.grid(row=0, column=0, padx=5, pady=5)
         btn_bwd.grid(row=0, column=1, padx=5, pady=5)
 
-        # Angular velocity display
-        self.vel_label = tk.Label(self.root, text="ω = 0.000 rad/s", width=20)
-        self.vel_label.grid(row=1, column=0, columnspan=2, pady=(0,10))
+        # Angle display (relative to vertical)
+        self.angle_label = tk.Label(self.root, text="Angle = 0.00°", width=20)
+        self.angle_label.grid(row=1, column=0, columnspan=2, pady=(0,10))
 
         # PID entries
         tk.Label(self.root, text="Kp:").grid(row=2, column=0, sticky="e")
@@ -117,19 +118,28 @@ class BalanceRoverEnv:
             print("Invalid PID input! Please enter numeric values.")
 
     def respawn(self):
-        """Reset rover to upright, stationary state with zero controls."""
+        """Reset rover to upright state at 10° from vertical (80° from horizontal)."""
         mujoco.mj_resetData(self.model, self.data)
-        # zero positions, velocities, controls
+
+        # Zero all qpos, qvel, controls
         self.data.qpos[:] = 0.0
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
+
+        # Set initial pole angle: 10° from vertical => 80° from ground
+        initial_angle_deg = 10.0
+        initial_angle_rad = np.deg2rad(initial_angle_deg)
+        # qpos[3] corresponds to the pole hinge joint
+        self.data.qpos[3] = initial_angle_rad
+
         mujoco.mj_forward(self.model, self.data)
-        # reset controller states
-        self.integral      = 0.0
-        self.prev_error    = 0.0
-        self.drive_target  = 0.0
-        self.drive_current = 0.0
-        self.u_smoothed    = 0.0
+
+        # Reset controller states
+        self.integral         = 0.0
+        self.prev_error       = 0.0
+        self.drive_target     = 0.0
+        self.drive_current    = 0.0
+        self.u_smoothed       = 0.0
         self.forward_pressed  = False
         self.backward_pressed = False
 
@@ -177,7 +187,7 @@ class BalanceRoverEnv:
 
 if __name__ == "__main__":
     env = BalanceRoverEnv()
-    dt  = env.model.opt.timestep
+    dt = env.model.opt.timestep
     sim_time = 0.0
 
     while sim_time < SIM_DURATION:
@@ -188,42 +198,45 @@ if __name__ == "__main__":
             print(f"Numerical instability at t={sim_time:.3f}s; aborting early.")
             break
 
-        # read pendulum angle & angular velocity
-        theta     = env.data.qpos[3]
-        theta_dot = env.data.qvel[3]
-        env.vel_label.config(text=f"ω = {theta_dot:.3f} rad/s")
+        # Read pendulum angle & angular velocity
+        theta       = env.data.qpos[3]      # radians from vertical
+        theta_dot   = env.data.qvel[3]
+        theta_deg   = np.rad2deg(theta)
+        # Update display: angle relative to vertical upward normal
+        self_text   = f"Angle = {theta_deg:.2f}°"
+        env.angle_label.config(text=self_text)
 
-        # ramp manual drive
-        err_d  = env.drive_target - env.drive_current
-        mdx    = DRIVE_RAMP_RATE * dt
+        # Ramp manual drive
+        err_d = env.drive_target - env.drive_current
+        mdx   = DRIVE_RAMP_RATE * dt
         if abs(err_d) > mdx:
             env.drive_current += np.sign(err_d) * mdx
         else:
             env.drive_current = env.drive_target
 
         # PID on angle → torque
-        err           = theta
-        env.integral += err * dt
-        derivative     = (err - env.prev_error) / dt
-        env.prev_error = err
-        u_pid          = -(Kp*err + Ki*env.integral + Kd*derivative)
+        err             = theta
+        env.integral   += err * dt
+        derivative      = (err - env.prev_error) / dt
+        env.prev_error  = err
+        u_pid           = -(Kp * err + Ki * env.integral + Kd * derivative)
 
-        # combine & exponential‐smooth
-        u_target       = u_pid + env.drive_current
-        alpha          = dt / SMOOTH_TAU
+        # Combine & exponential-smooth
+        u_target        = u_pid + env.drive_current
+        alpha           = dt / SMOOTH_TAU
         env.u_smoothed += alpha * (u_target - env.u_smoothed)
 
-        # apply to wheels
+        # Apply to wheels
         u   = float(np.clip(env.u_smoothed, -3.0, 3.0))
         cmd = u / 3.0
         env.data.ctrl[0] = cmd
         env.data.ctrl[1] = cmd
 
-        # render & UI
+        # Render & UI
         env.viewer.sync()
         env.root.update()
 
-        # if it falls, just note it but keep running
+        # If it falls, note but keep running
         if abs(theta) > FALL_THRESH:
             print(f"Fallen at t={sim_time:.3f}s (θ={theta:.3f} rad)")
 

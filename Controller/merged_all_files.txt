@@ -70,28 +70,29 @@
 === File: /c/Users/User/Documents/Balance_Rover/Controller/balance_rover_env.py ===
 #!/usr/bin/env python3
 """
-BalanceRoverEnv with PID + keyboard drive.
-Run with:
-    python balance_rover_env.py
-Hold ← / → to drive while PID keeps the pole upright.
+BalanceRoverEnv with PID + keyboard & button drive + live PID tuning + respawn,
+with robust button handling so subsequent presses work correctly.
 """
 
 import sys
 from pathlib import Path
-
 import numpy as np
 import mujoco
 import mujoco.viewer
 from mujoco.viewer import glfw
+import tkinter as tk
 
-# PID gains & drive settings
-Kp, Ki, Kd    = 200.0, 20.0, 10.0
-DRIVE_GAIN    = 1.5           # N·m per key press
-MAX_STEPS     = 200_000
-FALL_THRESH   = np.pi * 0.9   # ~90% of 90°
+# —————————————————————————————————————————————————————————
+# INITIAL TUNING PARAMETERS (live‐tunable via UI)
+Kp, Ki, Kd = 30.0, 1.0, 0.5
+DRIVE_GAIN      = 0.2    # N·m per button/key press
+DRIVE_RAMP_RATE = 0.2    # N·m per second
+SMOOTH_TAU      = 0.5    # seconds for exponential smoothing
+FALL_THRESH     = np.pi * 0.9
+SIM_DURATION    = 600.0  # seconds of simulation time
+# —————————————————————————————————————————————————————————
 
 class BalanceRoverEnv:
-    """MuJoCo two‐wheel balance rover plus pole, with keyboard control."""
     def __init__(self):
         xml = Path(__file__).with_name("balance_rover.xml")
         if not xml.exists():
@@ -102,463 +103,238 @@ class BalanceRoverEnv:
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.data  = mujoco.MjData(self.model)
 
-        # launch GUI, register key callback
-        self._drive = 0.0
+        # PID integrator state
+        self.integral      = 0.0
+        self.prev_error    = 0.0
+
+        # manual‐drive pressed flags
+        self.forward_pressed  = False
+        self.backward_pressed = False
+
+        # drive targets & smoothing state
+        self.drive_target  = 0.0
+        self.drive_current = 0.0
+        self.u_smoothed    = 0.0
+
+        # launch MuJoCo window
         self.viewer = mujoco.viewer.launch_passive(
-            self.model, self.data,
-            key_callback=self._key_cb,
-            show_ui=True
+            self.model,
+            self.data,
+            key_callback=self._key_cb
         )
 
-    def _key_cb(self, window, key, scancode, action, mods):
-        """MuJoCo calls this on key events."""
-        if key == glfw.KEY_RIGHT:
-            if action == glfw.PRESS:   self._drive += DRIVE_GAIN
-            if action == glfw.RELEASE: self._drive -= DRIVE_GAIN
-        if key == glfw.KEY_LEFT:
-            if action == glfw.PRESS:   self._drive -= DRIVE_GAIN
-            if action == glfw.RELEASE: self._drive += DRIVE_GAIN
+        # build control UI
+        self._init_button_ui()
 
-    def reset(self):
-        """Reset simulation and give a small random tip to the pole."""
+        # initial perfect respawn
+        self.respawn()
+
+    def _init_button_ui(self):
+        """Create Tk window with drive buttons, ω display, PID inputs, and respawn."""
+        self.root = tk.Tk()
+        self.root.title("Rover Drive + PID Tuning")
+        self.root.resizable(False, False)
+
+        # Drive buttons
+        btn_fwd = tk.Button(self.root, text="Forward",  width=10)
+        btn_bwd = tk.Button(self.root, text="Backward", width=10)
+        btn_fwd.grid(row=0, column=0, padx=5, pady=5)
+        btn_bwd.grid(row=0, column=1, padx=5, pady=5)
+
+        # Angular velocity display
+        self.vel_label = tk.Label(self.root, text="ω = 0.000 rad/s", width=20)
+        self.vel_label.grid(row=1, column=0, columnspan=2, pady=(0,10))
+
+        # PID entries
+        tk.Label(self.root, text="Kp:").grid(row=2, column=0, sticky="e")
+        self.entry_Kp = tk.Entry(self.root, width=6)
+        self.entry_Kp.insert(0, str(Kp))
+        self.entry_Kp.grid(row=2, column=1, sticky="w")
+
+        tk.Label(self.root, text="Ki:").grid(row=3, column=0, sticky="e")
+        self.entry_Ki = tk.Entry(self.root, width=6)
+        self.entry_Ki.insert(0, str(Ki))
+        self.entry_Ki.grid(row=3, column=1, sticky="w")
+
+        tk.Label(self.root, text="Kd:").grid(row=4, column=0, sticky="e")
+        self.entry_Kd = tk.Entry(self.root, width=6)
+        self.entry_Kd.insert(0, str(Kd))
+        self.entry_Kd.grid(row=4, column=1, sticky="w")
+
+        # Update PID button
+        btn_update = tk.Button(self.root, text="Update PID Gains", command=self._update_pid)
+        btn_update.grid(row=5, column=0, columnspan=2, pady=(5,5))
+
+        # Respawn button
+        btn_respawn = tk.Button(self.root, text="Respawn Rover", command=self.respawn)
+        btn_respawn.grid(row=6, column=0, columnspan=2, pady=(5,10))
+
+        # Bind drive button events
+        btn_fwd.bind("<ButtonPress-1>",   self._on_fwd_press)
+        btn_fwd.bind("<ButtonRelease-1>", self._on_fwd_release)
+        btn_bwd.bind("<ButtonPress-1>",   self._on_bwd_press)
+        btn_bwd.bind("<ButtonRelease-1>", self._on_bwd_release)
+
+    def _update_pid(self):
+        """Read PID entries and apply new gains."""
+        global Kp, Ki, Kd
+        try:
+            Kp = float(self.entry_Kp.get())
+            Ki = float(self.entry_Ki.get())
+            Kd = float(self.entry_Kd.get())
+            print(f"PID gains updated: Kp={Kp}, Ki={Ki}, Kd={Kd}")
+        except ValueError:
+            print("Invalid PID input! Please enter numeric values.")
+
+    def respawn(self):
+        """Reset rover to upright, stationary state with zero controls."""
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[3] = 0.02
-        return self._get_obs()
+        # zero positions, velocities, controls
+        self.data.qpos[:] = 0.0
+        self.data.qvel[:] = 0.0
+        self.data.ctrl[:] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        # reset controller states
+        self.integral      = 0.0
+        self.prev_error    = 0.0
+        self.drive_target  = 0.0
+        self.drive_current = 0.0
+        self.u_smoothed    = 0.0
+        self.forward_pressed  = False
+        self.backward_pressed = False
 
-    def _get_obs(self):
-        return np.concatenate([self.data.qpos, self.data.qvel])
+    def _on_fwd_press(self, event):
+        self.forward_pressed = True
+        self._update_drive_target()
 
-    def step(self, action):
-        """Apply wheel actions (normalized), step physics, return new obs."""
-        self.data.ctrl[:] = 3.0 * np.clip(action, -1, 1)
-        mujoco.mj_step(self.model, self.data)
-        return self._get_obs()
+    def _on_fwd_release(self, event):
+        self.forward_pressed = False
+        self._update_drive_target()
+
+    def _on_bwd_press(self, event):
+        self.backward_pressed = True
+        self._update_drive_target()
+
+    def _on_bwd_release(self, event):
+        self.backward_pressed = False
+        self._update_drive_target()
+
+    def _update_drive_target(self):
+        self.drive_target = DRIVE_GAIN * (1 if self.forward_pressed else 0) \
+                          - DRIVE_GAIN * (1 if self.backward_pressed else 0)
+
+    def _key_cb(self, window, key, scancode, action, mods):
+        """Handle ←/→ key presses for drive."""
+        if key == glfw.KEY_RIGHT:
+            if action == glfw.PRESS:
+                self.forward_pressed = True
+                self._update_drive_target()
+            elif action == glfw.RELEASE:
+                self.forward_pressed = False
+                self._update_drive_target()
+        if key == glfw.KEY_LEFT:
+            if action == glfw.PRESS:
+                self.backward_pressed = True
+                self._update_drive_target()
+            elif action == glfw.RELEASE:
+                self.backward_pressed = False
+                self._update_drive_target()
 
     def close(self):
         self.viewer.close()
+        self.root.destroy()
 
 
 if __name__ == "__main__":
     env = BalanceRoverEnv()
     dt  = env.model.opt.timestep
+    sim_time = 0.0
 
-    # PID state
-    integral, prev_error = 0.0, 0.0
-
-    obs = env.reset()
-    for step in range(MAX_STEPS):
-        # step MuJoCo
+    while sim_time < SIM_DURATION:
         mujoco.mj_step(env.model, env.data)
+        sim_time += dt
 
-        # check for blow-ups
         if not np.all(np.isfinite(env.data.qacc)):
-            print(f"Unstable sim at t={step*dt:.4f}s; aborting.")
+            print(f"Numerical instability at t={sim_time:.3f}s; aborting early.")
             break
 
-        # read pole hinge (joint index 3)
-        θ    = env.data.qpos[3]
-        θdot = env.data.qvel[3]
+        # read pendulum angle & angular velocity
+        theta     = env.data.qpos[3]
+        theta_dot = env.data.qvel[3]
+        env.vel_label.config(text=f"ω = {theta_dot:.3f} rad/s")
 
-        # PID on θ
-        err        = θ
-        integral  += err * dt
-        derivative = (err - prev_error) / dt
-        prev_error = err
-        u_pid      = -(Kp*err + Ki*integral + Kd*derivative)
+        # ramp manual drive
+        err_d  = env.drive_target - env.drive_current
+        mdx    = DRIVE_RAMP_RATE * dt
+        if abs(err_d) > mdx:
+            env.drive_current += np.sign(err_d) * mdx
+        else:
+            env.drive_current = env.drive_target
 
-        # add keyboard drive torque
-        u = float(np.clip(u_pid + env._drive, -3.0, 3.0))
+        # PID on angle → torque
+        err           = theta
+        env.integral += err * dt
+        derivative     = (err - env.prev_error) / dt
+        env.prev_error = err
+        u_pid          = -(Kp*err + Ki*env.integral + Kd*derivative)
 
-        # map torque → normalized wheel action
-        a = u / 3.0
-        env.data.ctrl[0] = a
-        env.data.ctrl[1] = a
+        # combine & exponential‐smooth
+        u_target       = u_pid + env.drive_current
+        alpha          = dt / SMOOTH_TAU
+        env.u_smoothed += alpha * (u_target - env.u_smoothed)
 
-        # render
+        # apply to wheels
+        u   = float(np.clip(env.u_smoothed, -3.0, 3.0))
+        cmd = u / 3.0
+        env.data.ctrl[0] = cmd
+        env.data.ctrl[1] = cmd
+
+        # render & UI
         env.viewer.sync()
+        env.root.update()
 
-        # stop if truly fallen flat
-        if abs(θ) > FALL_THRESH:
-            print(f"Fallen at t={step*dt:.3f}s (θ={θ:.3f} rad)")
-            break
+        # if it falls, just note it but keep running
+        if abs(theta) > FALL_THRESH:
+            print(f"Fallen at t={sim_time:.3f}s (θ={theta:.3f} rad)")
 
-    input("Simulation ended. Press Enter to close…")
+    print("Simulation time reached.")
+    input("Press Enter to close…")
     env.close()
 
 --------------------------------------
 
-=== File: /c/Users/User/Documents/Balance_Rover/Controller/dual_loop_controller.py ===
+=== File: /c/Users/User/Documents/Balance_Rover/Controller/pid_controller.py ===
 #!/usr/bin/env python3
 """
-Dual-Loop PID Controller for Balance Rover
-
-Implements an outer loop for position (cart) control and an inner loop for
-pendulum angle control. The outer loop computes a desired pendulum angle based
-on cart position error; the inner loop computes wheel torques to track that angle.
-
+Simple PID controller.
 Usage:
-    python dual_loop_controller.py [--Kp_pos Kp] [--Kd_pos Kd]
-                                  [--Kp_ang Kp] [--Ki_ang Ki] [--Kd_ang Kd]
-                                  [--steps N] [--initial-tip TIP]
-"""
-import sys
-import argparse
-from pathlib import Path
-
-import numpy as np
-import mujoco
-import mujoco.viewer
-
-# Joint indices in qpos/qvel:
-# 0: slide, 1: L_spin, 2: R_spin, 3: hinge
-IDX_SLIDE = 0
-IDX_HINGE = 3
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Dual-Loop PID for Balance Rover")
-    # Outer loop gains (position -> desired angle)
-    parser.add_argument("--Kp_pos", type=float, default=2.0, help="Position P gain")
-    parser.add_argument("--Kd_pos", type=float, default=1.0, help="Position D gain")
-    # Inner loop gains (angle -> torque)
-    parser.add_argument("--Kp_ang", type=float, default=200.0, help="Angle P gain")
-    parser.add_argument("--Ki_ang", type=float, default=10.0,  help="Angle I gain")
-    parser.add_argument("--Kd_ang", type=float, default=20.0,  help="Angle D gain")
-    parser.add_argument("--steps", type=int, default=200_000, help="Max simulation steps")
-    parser.add_argument("--initial-tip", type=float, default=0.02, help="Initial pendulum tip (rad)")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    # Load model
-    xml = Path(__file__).with_name("balance_rover.xml")
-    if not xml.exists():
-        print(f"Error: {xml.name} not found.")
-        sys.exit(1)
-    model = mujoco.MjModel.from_xml_path(str(xml))
-    data  = mujoco.MjData(model)
-
-    # Initial small tip
-    data.qpos[IDX_HINGE] = args.initial_tip
-
-    # Launch viewer
-    viewer = mujoco.viewer.launch_passive(model, data)
-
-    # Time step
-    dt = model.opt.timestep
-
-    # Inner loop integrator state
-    integral_ang = 0.0
-    prev_err_ang = 0.0
-
-    for step in range(args.steps):
-        # Advance sim
-        mujoco.mj_step(model, data)
-
-        # Crash detection
-        if not np.all(np.isfinite(data.qacc)):
-            print(f"Simulation unstable at step {step}, aborting.")
-            break
-
-        # Read states
-        x      = data.qpos[IDX_SLIDE]
-        x_dot  = data.qvel[IDX_SLIDE]
-        theta  = data.qpos[IDX_HINGE]
-        theta_dot = data.qvel[IDX_HINGE]
-
-        # Outer loop: desired angle = -Kp_pos*x - Kd_pos*x_dot
-        theta_ref = -(args.Kp_pos * x + args.Kd_pos * x_dot)
-        # clamp desired angle small
-        theta_ref = np.clip(theta_ref, -0.2, 0.2)
-
-        # Inner loop: angle error
-        err_ang = theta - theta_ref
-        integral_ang += err_ang * dt
-        derivative_ang = (err_ang - prev_err_ang) / dt
-        prev_err_ang = err_ang
-
-        # PID torque
-        u = -(args.Kp_ang * err_ang + args.Ki_ang * integral_ang + args.Kd_ang * derivative_ang)
-        u = float(np.clip(u, -3.0, 3.0))
-
-        # Apply to both wheels
-        cmd = u / 3.0  # normalize
-        data.ctrl[0] = cmd
-        data.ctrl[1] = cmd
-
-        # Render
-        viewer.sync()
-
-        # Check fall
-        if abs(theta) > np.pi*0.9:
-            t = step * dt
-            print(f"Fallen at time {t:.3f}s, theta={theta:.3f} rad")
-            break
-
-    # Wait before exit
-    input("Done. Press Enter to close.")
-    viewer.close()
-
-
-if __name__ == "__main__":
-    main()
-
---------------------------------------
-
-=== File: /c/Users/User/Documents/Balance_Rover/Controller/run_dual_loop.py ===
-#!/usr/bin/env python3
-"""
-Dual-loop PID + visual wheel spin for the balance rover.
-Outer: position → desired tilt; Inner: tilt → slide force.
+    from pid_controller import PIDController
+    pid = PIDController(Kp=30.0, Ki=1.0, Kd=0.5)
+    u = pid.update(error, dt)      # returns control effort (no sign inversion)
+    pid.set_gains(Kp, Ki, Kd)      # update gains at runtime
+    pid.reset()                    # zero integral and derivative states
 """
 
-import sys
-from pathlib import Path
-import argparse
+class PIDController:
+    def __init__(self, Kp=1.0, Ki=0.0, Kd=0.0):
+        self.Kp = Kp
+        self.Ki = Ki
+        self.Kd = Kd
+        self.integral = 0.0
+        self.prev_error = 0.0
 
-import numpy as np
-import mujoco
-import mujoco.viewer
+    def update(self, error, dt):
+        """Compute PID output for given error and dt."""
+        self.integral += error * dt
+        derivative = (error - self.prev_error) / dt if dt > 0 else 0.0
+        self.prev_error = error
+        return (self.Kp * error) + (self.Ki * self.integral) + (self.Kd * derivative)
 
-# Joint indices
-SLIDE_IDX = 0    # slide
-HINGE_IDX = 3    # pendulum hinge
-WHEEL_L   = 1    # wheel_L hinge
-WHEEL_R   = 2    # wheel_R hinge
+    def set_gains(self, Kp, Ki, Kd):
+        self.Kp, self.Ki, self.Kd = Kp, Ki, Kd
 
-# Default PID gains
-DEFAULTS = {
-    'kp_pos': 10.0, 'ki_pos': 0.0,  'kd_pos': 1.0,
-    'kp_ang':150.0, 'ki_ang': 5.0,  'kd_ang': 2.0,
-}
-
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument('--kp_pos', type=float, default=DEFAULTS['kp_pos'])
-    p.add_argument('--ki_pos', type=float, default=DEFAULTS['ki_pos'])
-    p.add_argument('--kd_pos', type=float, default=DEFAULTS['kd_pos'])
-    p.add_argument('--kp_ang', type=float, default=DEFAULTS['kp_ang'])
-    p.add_argument('--ki_ang', type=float, default=DEFAULTS['ki_ang'])
-    p.add_argument('--kd_ang', type=float, default=DEFAULTS['kd_ang'])
-    p.add_argument('--max-steps', type=int,   default=200_000)
-    p.add_argument('--fall-thresh', type=float, default=np.pi*0.9)
-    return p.parse_args()
-
-def main():
-    args = parse_args()
-
-    # load model
-    xml = Path(__file__).with_name('balance_rover.xml')
-    if not xml.exists():
-        print("Missing balance_rover.xml"); sys.exit(1)
-    model = mujoco.MjModel.from_xml_path(str(xml))
-    data  = mujoco.MjData(model)
-
-    # launch GUI
-    viewer = mujoco.viewer.launch_passive(model, data)
-
-    dt = model.opt.timestep
-    i_pos, p_pos = 0.0, 0.0
-    i_ang, p_ang = 0.0, 0.0
-    x_ref = 0.0
-
-    for step in range(args.max_steps):
-        mujoco.mj_step(model, data)
-
-        # blow-up check
-        if not np.all(np.isfinite(data.qacc)):
-            print("Numerical instability."); break
-
-        # states
-        x   = data.qpos[SLIDE_IDX]
-        th  = data.qpos[HINGE_IDX]
-
-        # outer PID: pos → tilt_ref
-        e_pos = x_ref - x
-        i_pos += e_pos*dt
-        d_pos = (e_pos - p_pos)/dt; p_pos = e_pos
-        th_ref = (args.kp_pos*e_pos + args.ki_pos*i_pos + args.kd_pos*d_pos)
-        th_ref = np.clip(th_ref, -0.3, 0.3)
-
-        # inner PID: tilt error → force u
-        e_ang = th_ref - th
-        i_ang += e_ang*dt
-        d_ang = (e_ang - p_ang)/dt; p_ang = e_ang
-        u     = args.kp_ang*e_ang + args.ki_ang*i_ang + args.kd_ang*d_ang
-        u     = float(np.clip(u, -5.0, 5.0))
-
-        # apply directly to slide joint
-        data.ctrl[0] = u
-
-        # spin wheels visually: theta_wheel = slide_pos / wheel_radius
-        wheel_radius = 0.06
-        angle = data.qpos[SLIDE_IDX] / wheel_radius
-        data.qpos[WHEEL_L] = angle
-        data.qpos[WHEEL_R] = angle
-
-        # render
-        viewer.sync()
-
-        if abs(th) > args.fall_thresh:
-            print(f"Fell at t={step*dt:.3f}s, θ={th:.3f}")
-            break
-
-    input("Done. Press Enter to close…")
-    viewer.close()
-
-if __name__=='__main__':
-    main()
-
---------------------------------------
-
-=== File: /c/Users/User/Documents/Balance_Rover/Controller/run_velocity_dual_loop.py ===
-#!/usr/bin/env python3
-"""
-Dual-loop velocity→tilt→torque self-balancing rover with manual drive input.
-
-Controls:
-  • Hold L (key “l” or uppercase “L”) to drive forward
-  • Hold J (key “j” or uppercase “J”) to drive backward
-
-Prints wheel angular velocities to console in real-time. Press Ctrl+C to exit.
-"""
-
-import sys
-import argparse
-from pathlib import Path
-
-import numpy as np
-import mujoco
-import mujoco.viewer
-from mujoco.viewer import glfw
-from mujoco import mj_id2name, mjtObj
-
-# Joint indices in qpos/qvel: slide=0, L_spin=1, R_spin=2, hinge=3
-HINGE_IDX   = 3
-WHEEL_L_IDX = 1
-WHEEL_R_IDX = 2
-
-# Drive flags
-drive_fwd = False
-drive_bwd = False
-
-def key_callback(window, key, scancode, action, mods):
-    """
-    MuJoCo calls this on key events.
-    Sets drive_fwd or drive_bwd when L/J pressed or released.
-    """
-    global drive_fwd, drive_bwd
-    if key == glfw.KEY_L:
-        drive_fwd = (action == glfw.PRESS)
-    elif key == glfw.KEY_J:
-        drive_bwd = (action == glfw.PRESS)
-
-def parse_args():
-    p = argparse.ArgumentParser(description="Velocity-based dual-loop PID balance rover")
-    p.add_argument('--drive-speed', type=float, default=0.1,
-                   help='Manual drive speed (m/s) when key held')
-    # outer velocity loop gains
-    p.add_argument('--kp_vel', type=float, default=10.0)
-    p.add_argument('--ki_vel', type=float, default=0.0)
-    p.add_argument('--kd_vel', type=float, default=2.0)
-    # inner angle loop gains
-    p.add_argument('--kp_ang', type=float, default=150.0)
-    p.add_argument('--ki_ang', type=float, default=10.0)
-    p.add_argument('--kd_ang', type=float, default=5.0)
-    return p.parse_args()
-
-def main():
-    args = parse_args()
-
-    # Load model & data
-    xml = Path(__file__).with_name('balance_rover.xml')
-    if not xml.exists():
-        print('Error: balance_rover.xml not found.')
-        sys.exit(1)
-    model = mujoco.MjModel.from_xml_path(str(xml))
-    data  = mujoco.MjData(model)
-
-    # Map wheel actuators
-    act_names = [mj_id2name(model, mjtObj.mjOBJ_ACTUATOR, i)
-                 for i in range(model.nu)]
-    if 'u_L' not in act_names or 'u_R' not in act_names:
-        print("Error: actuators 'u_L' and 'u_R' must be defined in balance_rover.xml.")
-        sys.exit(1)
-    i_L = act_names.index('u_L')
-    i_R = act_names.index('u_R')
-
-    print("Balanced rover dual-loop")
-    print(f"Wheel actuators: u_L@{i_L}, u_R@{i_R}")
-    print("Controls: hold L (forward) or J (backward); Ctrl+C to exit.")
-
-    # Launch the GUI and register our key callback
-    viewer = mujoco.viewer.launch_passive(
-        model, data,
-        key_callback=key_callback
-    )
-    dt = model.opt.timestep
-
-    # PID integrators
-    int_v = prev_v = 0.0
-    int_a = prev_a = 0.0
-
-    try:
-        step = 0
-        while True:
-            mujoco.mj_step(model, data)
-
-            # Numerical stability check
-            if not np.all(np.isfinite(data.qacc)):
-                print(f"\nNumerical blow-up at t={step*dt:.4f}s; exiting.")
-                break
-
-            # Read current and desired velocity
-            v     = data.qvel[0]
-            v_ref = args.drive_speed * (1 if drive_fwd else 0) \
-                  - args.drive_speed * (1 if drive_bwd else 0)
-
-            # Outer loop: velocity → tilt reference
-            err_v = v_ref - v
-            int_v += err_v * dt
-            der_v = (err_v - prev_v) / dt
-            prev_v = err_v
-            theta_ref = (args.kp_vel * err_v
-                       + args.ki_vel * int_v
-                       + args.kd_vel * der_v)
-            theta_ref = float(np.clip(theta_ref, -0.3, 0.3))
-
-            # Inner loop: tilt → torque
-            theta = data.qpos[HINGE_IDX]
-            err_a = theta_ref - theta
-            int_a += err_a * dt
-            der_a = (err_a - prev_a) / dt
-            prev_a = err_a
-            u = (args.kp_ang * err_a
-                 + args.ki_ang * int_a
-                 + args.kd_ang * der_a)
-            u = float(np.clip(u, -3.0, 3.0))
-
-            # Apply torque to both wheels
-            a_norm = u / 3.0
-            data.ctrl[i_L] = a_norm
-            data.ctrl[i_R] = a_norm
-
-            # Print wheel angular velocities
-            omega_L = data.qvel[WHEEL_L_IDX]
-            omega_R = data.qvel[WHEEL_R_IDX]
-            print(f"ω_L={omega_L:.2f} rad/s | ω_R={omega_R:.2f} rad/s", end='\r')
-
-            viewer.sync()
-            step += 1
-
-    except KeyboardInterrupt:
-        print("\nUser exit.")
-
-    viewer.close()
-
-if __name__ == '__main__':
-    main()
+    def reset(self):
+        self.integral = 0.0
+        self.prev_error = 0.0
 
 --------------------------------------
