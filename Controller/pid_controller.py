@@ -22,13 +22,13 @@ import tkinter as tk
 # —————————————————————————————————————————————————————————
 # INITIAL TUNING PARAMETERS (live-tunable via UI)
 # Outer loop (angle) gains
-Kp_ang, Ki_ang, Kd_ang = 30.0, 1.0, 0.5
+Kp_ang, Ki_ang, Kd_ang = 30.0, 10.0, 0.5
 # Inner loop (velocity) gains
 Kp_vel, Ki_vel, Kd_vel = 20.0, 0.5, 0.1
 
-DRIVE_GAIN      = 0.2    # N·m per button/key press
+DRIVE_GAIN      = 0.4    # N·m per button/key press
 DRIVE_RAMP_RATE = 0.2    # N·m per second
-SMOOTH_TAU      = 0.5    # seconds for exp smoothing
+SMOOTH_TAU      = 4    # seconds for exp smoothing
 FALL_THRESH     = np.pi * 0.9
 SIM_DURATION    = 600.0  # seconds
 
