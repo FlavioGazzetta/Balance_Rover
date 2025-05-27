@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "utility": "cpp",
+        "xutility": "cpp",
+        "compare": "cpp",
+        "format": "cpp",
+        "memory": "cpp",
+        "ratio": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "xmemory": "cpp",
+        "xtr1common": "cpp"
+    }
+}

@@ -21,61 +21,45 @@
       <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
 
       <!-- Left wheel -->
-      <body name="wheel_L" pos="0  0.05 0.02">
+      <body name="wheel_L" pos="0 0.05 0.02">
         <joint name="L_spin" type="hinge" axis="0 1 0" limited="false"/>
         <inertial pos="0 0 0" mass="0.3" diaginertia="0.0001 0.0001 0.0001"/>
-        <geom  type="cylinder"
-               size="0.06 0.005"
-               quat="0.7071 0.7071 0 0"
-               contype="1" conaffinity="1"
-               friction="1 0.1 0.1"
-               rgba="0.2 0.2 0.2 1"/>
+        <geom type="cylinder" size="0.06 0.005"
+              quat="0.7071 0.7071 0 0"
+              contype="1" conaffinity="1"
+              friction="1 0.1 0.1"
+              rgba="0.2 0.2 0.2 1"/>
       </body>
 
       <!-- Right wheel -->
       <body name="wheel_R" pos="0 -0.05 0.02">
         <joint name="R_spin" type="hinge" axis="0 1 0" limited="false"/>
         <inertial pos="0 0 0" mass="0.3" diaginertia="0.0001 0.0001 0.0001"/>
-        <geom  type="cylinder"
-               size="0.06 0.005"
-               quat="0.7071 0.7071 0 0"
-               contype="1" conaffinity="1"
-               friction="1 0.1 0.1"
-               rgba="0.2 0.2 0.2 1"/>
+        <geom type="cylinder" size="0.06 0.005"
+              quat="0.7071 0.7071 0 0"
+              contype="1" conaffinity="1"
+              friction="1 0.1 0.1"
+              rgba="0.2 0.2 0.2 1"/>
       </body>
 
       <!-- Pendulum pole -->
       <body name="pole" pos="0 0 0.04">
         <joint name="hinge" type="hinge" axis="0 1 0" damping="0.0" limited="false"/>
-        <geom type="capsule"
-              fromto="0 0 0  0 0 0.5"
-              size="0.02"
-              rgba="0.8 0.3 0.3 1"/>
+        <geom type="capsule" fromto="0 0 0  0 0 0.5" size="0.02" rgba="0.8 0.3 0.3 1"/>
 
-        <!-- attach a tiny site for our sensors -->
-        <site name="pole_site"
-              pos="0 0 0.25"
-              size="0.01"
-              rgba="1 0 0 0.5"/>
+        <!-- site at bottom of the pole for the IMU -->
+        <site name="imu_site" pos="0 0 0" size="0.01" rgba="0 1 0 0.5"/>
       </body>
-
-    </body> <!-- base -->
-
+    </body>
   </worldbody>
 
-  <!-- SENSORS: 3-axis gyro and accel at pole_site -->
+  <!-- corrected sensor block -->
   <sensor>
-    <gyro name="pole_gyro"
-          site="pole_site"
-          cutoff="0.0"/>  
-
-    <accelerometer name="pole_accel"
-                   site="pole_site"
-                   cutoff="0.0"/>
+    <accelerometer name="pole_accel" site="imu_site"/>
+    <gyro          name="pole_gyro"  site="imu_site"/>
   </sensor>
 
   <actuator>
-    <!-- Two independent wheel motors -->
     <motor joint="L_spin" name="u_L" ctrlrange="-3 3" gear="100"/>
     <motor joint="R_spin" name="u_R" ctrlrange="-3 3" gear="100"/>
   </actuator>
