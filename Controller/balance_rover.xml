@@ -51,10 +51,28 @@
               fromto="0 0 0  0 0 0.5"
               size="0.02"
               rgba="0.8 0.3 0.3 1"/>
+
+        <!-- attach a tiny site for our sensors -->
+        <site name="pole_site"
+              pos="0 0 0.25"
+              size="0.01"
+              rgba="1 0 0 0.5"/>
       </body>
 
-    </body> <!-- Missing closing tag for base added here -->
+    </body> <!-- base -->
+
   </worldbody>
+
+  <!-- SENSORS: 3-axis gyro and accel at pole_site -->
+  <sensor>
+    <gyro name="pole_gyro"
+          site="pole_site"
+          cutoff="0.0"/>  
+
+    <accelerometer name="pole_accel"
+                   site="pole_site"
+                   cutoff="0.0"/>
+  </sensor>
 
   <actuator>
     <!-- Two independent wheel motors -->

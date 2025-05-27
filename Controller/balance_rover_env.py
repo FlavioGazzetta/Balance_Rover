@@ -3,44 +3,53 @@ import sys, os
 from pathlib import Path
 import numpy as np
 import mujoco, mujoco.viewer
-from mujoco.viewer import glfw
 import tkinter as tk
 from collections import deque
 from ctypes import CDLL, c_void_p, c_float
 import numpy.ctypeslib as ctl
 
 # —————————————————————————————————————————————————————————
-# 1) Load & bind C++ controller library (only the functions that exist)
+# 1) Load & bind C++ controller (with setters)
 # —————————————————————————————————————————————————————————
-script_dir = Path(__file__).parent
+script_dir = Path(__file__).parent.resolve()
 dll_path   = script_dir / "controller_lib.dll"
 if not dll_path.exists():
-    print(f"Error: controller_lib.dll not found at {dll_path}")
-    sys.exit(1)
+    sys.exit(f"Error: controller_lib.dll not found in {script_dir}")
 
-# (Windows DLL search paths)
+# ensure Windows can find dependencies
 mujoco_lib = os.getenv('MUJOCO_LIB', r'C:\mujoco\mujoco210\bin')
 mingw_bin  = r'C:\msys64\mingw64\bin'
-if hasattr(os, 'add_dll_directory'):
+if os.name == "nt" and hasattr(os, 'add_dll_directory'):
     os.add_dll_directory(str(script_dir))
     if os.path.isdir(mujoco_lib): os.add_dll_directory(mujoco_lib)
     if os.path.isdir(mingw_bin):  os.add_dll_directory(mingw_bin)
 else:
-    os.environ['PATH'] = os.pathsep.join([
-        str(script_dir), mujoco_lib, mingw_bin,
-        os.environ.get('PATH','')
-    ])
+    os.environ['PATH'] = os.pathsep.join([str(script_dir), mujoco_lib, mingw_bin, os.environ.get('PATH','')])
 
 lib = CDLL(str(dll_path))
-
-# Factory / destroyer
 lib.make_controller.restype = c_void_p
 lib.free_controller.argtypes = [c_void_p]
 
-# Step: theta, theta_dot, slide_vel, dt → cmd
-float_ptr = ctl.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
-lib.update_controller.argtypes = [c_void_p, float_ptr, float_ptr, float_ptr, float_ptr]
-lib.update_controller.restype  = c_float
+# Bind C++ API
+float_arr = ctl.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+lib.controller_fuse_imu.argtypes      = [c_void_p, float_arr, float_arr, float_arr]
+lib.controller_fuse_imu.restype       = None
+lib.controller_get_theta.argtypes     = [c_void_p]
+lib.controller_get_theta.restype      = c_float
+lib.controller_get_theta_dot.argtypes = [c_void_p]
+lib.controller_get_theta_dot.restype  = c_float
+lib.update_controller.argtypes        = [c_void_p, float_arr, float_arr, float_arr, float_arr]
+lib.update_controller.restype         = c_float
+
+# Setters
+lib.set_Kp_ang.argtypes       = [c_float]
+lib.set_Ki_ang.argtypes       = [c_float]
+lib.set_Kd_ang.argtypes       = [c_float]
+lib.set_drive_gain.argtypes   = [c_float]
+lib.set_overshoot.argtypes    = [c_float]
+lib.set_smooth_tau.argtypes   = [c_float]
+lib.set_drift_gain.argtypes   = [c_float]
+lib.set_drift_window.argtypes = [c_float]
 
 # Manual‐drive callbacks
 for fn in ("on_fwd_press","on_fwd_release","on_bwd_press","on_bwd_release"):
@@ -49,183 +58,149 @@ for fn in ("on_fwd_press","on_fwd_release","on_bwd_press","on_bwd_release"):
     f.restype  = None
 
 # —————————————————————————————————————————————————————————
-# 2) Python-side constants (used for UI defaults & simulation limits)
-#    (These must match your C++ defaults!)
+# 2) Constants
 # —————————————————————————————————————————————————————————
-from math import pi
-INITIAL_ANGLE   = 10.0 * pi/180.0
-FALL_THRESH     = pi * 0.9
-SIM_DURATION    = 600.0
-DRIFT_WINDOW    = 5.0
-
-# We show these in the UI but *cannot* actually reconfigure
-# them at runtime in C++ without additional setters.
-PARAM_DEFAULTS = {
-    "Kp_ang":       30.0,
-    "Ki_ang":       10.0,
-    "Kd_ang":       0.5,
-    "DRIVE_GAIN":      0.4,
-    "DRIVE_RAMP_RATE": 0.2,
-    "DRIFT_WINDOW":    DRIFT_WINDOW,
-    "DRIFT_GAIN":      -0.4,
-    "SMOOTH_TAU":      4.0,
-    "FALL_THRESH":     FALL_THRESH,
-    "SIM_DURATION":    SIM_DURATION,
-    "OVERSHOOT_RATE":  0.05,
-    "INITIAL_ANGLE":   INITIAL_ANGLE * (180.0/pi),  # show in degrees
-}
+DRIFT_WINDOW = 5.0
 
 # —————————————————————————————————————————————————————————
-# 3) BalanceRoverEnv exactly as before, but backed by C++
+# 3) BalanceRoverEnv
 # —————————————————————————————————————————————————————————
 class BalanceRoverEnv:
     def __init__(self):
-        xml = Path(__file__).with_name("balance_rover.xml")
+        xml = script_dir/"balance_rover.xml"
         if not xml.exists():
-            print("Error: balance_rover.xml not found.")
-            sys.exit(1)
-
-        # Load model & data
+            sys.exit("Error: balance_rover.xml not found")
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.data  = mujoco.MjData(self.model)
-        dt = self.model.opt.timestep
+        self.dt    = self.model.opt.timestep
 
-        # C++ controller instance
-        self.ctrl_ptr = lib.make_controller()
+        # Sensor & joint IDs
+        self.acc_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "pole_accel")
+        self.gyro_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "pole_gyro")
+        sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "slide")
+        self.slide_dof = self.model.jnt_dofadr[sid]
 
-        # Joint indices
-        hinge_jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'hinge')
-        slide_jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'slide')
-        self.hinge_qposadr = self.model.jnt_qposadr[hinge_jid]
-        self.slide_qposadr = self.model.jnt_qposadr[slide_jid]
+        # Controller instance
+        self.ctrl = lib.make_controller()
+        self.drift_buffer = deque(maxlen=int(DRIFT_WINDOW/self.dt))
 
-        # Viewer + UI
-        self.viewer = mujoco.viewer.launch_passive(
-            self.model, self.data, key_callback=self._key_cb
-        )
-        self._init_button_ui()
-
-        # Drift buffer
-        max_len = int(DRIFT_WINDOW / dt)
-        self.drift_buffer = deque(maxlen=max_len)
-
-        # Initial respawn
+        # UI + viewer
+        self.viewer = mujoco.viewer.launch_passive(self.model, self.data, key_callback=lambda *a: None)
+        self._build_ui()
         self.respawn()
 
-    def _init_button_ui(self):
+    def _build_ui(self):
         self.root = tk.Tk()
-        self.root.title("Rover Control & Params")
+        self.root.title("Balance Rover - Live Tuning")
         self.root.resizable(False, False)
 
-        # Forward/back buttons
-        btn_fwd = tk.Button(self.root, text="Forward",  width=10)
-        btn_bwd = tk.Button(self.root, text="Backward", width=10)
-        btn_fwd.grid(row=0, column=0, padx=5, pady=5)
-        btn_bwd.grid(row=0, column=1, padx=5, pady=5)
-
-        # Angle & drift display
-        self.angle_label = tk.Label(
-            self.root,
-            text="Angle = 0.00°, Drift = 0.0000 m/s",
-            width=40
-        )
-        self.angle_label.grid(row=1, column=0, columnspan=2, pady=(0,10))
-
-        # Parameter entries (display only)
+        # Parameter fields + initial angle
+        params = [
+            ("Kp_ang",      "30.0", lib.set_Kp_ang),
+            ("Ki_ang",      "10.0", lib.set_Ki_ang),
+            ("Kd_ang",       "0.5", lib.set_Kd_ang),
+            ("DriveGain",   "0.4", lib.set_drive_gain),
+            ("Overshoot",  "0.05", lib.set_overshoot),
+            ("SmoothTau",   "4.0", lib.set_smooth_tau),
+            ("DriftGain",  "-0.4", lib.set_drift_gain),
+            ("DriftWindow","5.0", lib.set_drift_window),
+            ("InitAngle",  "10.0", None)  # degrees
+        ]
         self.entries = {}
-        row = 1
-        for name, val in PARAM_DEFAULTS.items():
-            row += 1
-            tk.Label(self.root, text=f"{name}:").grid(row=row, column=0, sticky="e")
-            entry = tk.Entry(self.root, width=10)
-            entry.insert(0, f"{val:.4g}")
-            entry.config(state='readonly')
-            entry.grid(row=row, column=1, sticky="w")
-            self.entries[name] = entry
+        for i,(name,default,setter) in enumerate(params):
+            tk.Label(self.root,text=name).grid(row=i,column=0,sticky="e")
+            e = tk.Entry(self.root,width=8); e.insert(0,default)
+            e.grid(row=i,column=1,sticky="w")
+            self.entries[name] = (e,setter)
 
-        # Update & respawn buttons
-        row += 1
-        tk.Button(
-            self.root,
-            text="Update Params",
-            command=lambda: print("Live tuning not supported without C++ setters.")
-        ).grid(row=row, column=0, columnspan=2, pady=(5,5))
-        row += 1
-        tk.Button(
-            self.root,
-            text="Respawn Rover",
-            command=self.respawn
-        ).grid(row=row, column=0, columnspan=2, pady=(5,10))
+        # Update params button
+        tk.Button(self.root,text="Update Params",command=self._update_params)\
+          .grid(row=len(params),column=0,columnspan=2,pady=(5,2))
 
-        # Bind press/release to C++ handlers
-        btn_fwd.bind("<ButtonPress-1>",  lambda e: lib.on_fwd_press(self.ctrl_ptr))
-        btn_fwd.bind("<ButtonRelease-1>",lambda e: lib.on_fwd_release(self.ctrl_ptr))
-        btn_bwd.bind("<ButtonPress-1>",  lambda e: lib.on_bwd_press(self.ctrl_ptr))
-        btn_bwd.bind("<ButtonRelease-1>",lambda e: lib.on_bwd_release(self.ctrl_ptr))
+        # Respawn button
+        tk.Button(self.root,text="Respawn",command=self.respawn)\
+          .grid(row=len(params)+1,column=0,columnspan=2,pady=(2,10))
 
-    def _key_cb(self, window, key, scancode, action, mods):
-        # disable keyboard drive
-        pass
+        # Status display
+        self.status = tk.Label(self.root,text="",width=40,justify="left")
+        self.status.grid(row=len(params)+2,column=0,columnspan=2,pady=(0,10))
+
+        # Manual‐drive buttons
+        btn_f = tk.Button(self.root,text="Forward", width=10)
+        btn_b = tk.Button(self.root,text="Backward",width=10)
+        btn_f.grid(row=0,column=2,padx=5,pady=5)
+        btn_b.grid(row=1,column=2,padx=5,pady=5)
+        btn_f.bind("<ButtonPress-1>",  lambda e: lib.on_fwd_press(self.ctrl))
+        btn_f.bind("<ButtonRelease-1>",lambda e: lib.on_fwd_release(self.ctrl))
+        btn_b.bind("<ButtonPress-1>",  lambda e: lib.on_bwd_press(self.ctrl))
+        btn_b.bind("<ButtonRelease-1>",lambda e: lib.on_bwd_release(self.ctrl))
+
+    def _update_params(self):
+        for name,(entry,setter) in self.entries.items():
+            val = float(entry.get())
+            if name == "InitAngle":
+                self.initial_angle = np.deg2rad(val)
+            elif setter:
+                setter(val)
+        print("Parameters updated.")
 
     def respawn(self):
-        mujoco.mj_resetData(self.model, self.data)
+        mujoco.mj_resetData(self.model,self.data)
         self.data.qpos[:] = 0.0
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
 
-        # initial pole tilt
-        self.data.qpos[self.hinge_qposadr] = INITIAL_ANGLE
-        mujoco.mj_forward(self.model, self.data)
+        # Apply new initial angle
+        hj = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "hinge")
+        ia = getattr(self, "initial_angle", 0.0)
+        self.data.qpos[self.model.jnt_qposadr[hj]] = ia
+        mujoco.mj_forward(self.model,self.data)
 
-        # reset C++ controller
-        lib.free_controller(self.ctrl_ptr)
-        self.ctrl_ptr = lib.make_controller()
+        lib.free_controller(self.ctrl)
+        self.ctrl = lib.make_controller()
         self.drift_buffer.clear()
 
     def run(self):
-        dt = self.model.opt.timestep
-        t  = 0.0
+        dt_arr = np.array([self.dt],dtype=np.float32)
+        while True:
+            mujoco.mj_step(self.model,self.data)
+            sd    = self.data.sensordata
+            accel = np.array(sd[self.acc_id:self.acc_id+3],dtype=np.float32)
+            gyro  = np.array(sd[self.gyro_id:self.gyro_id+3],dtype=np.float32)
+            slide = np.array([self.data.qvel[self.slide_dof]],dtype=np.float32)
 
-        while t < SIM_DURATION:
-            mujoco.mj_step(self.model, self.data)
-            t += dt
+            # Fuse IMU and read θ/θ̇
+            lib.controller_fuse_imu(self.ctrl, accel, gyro, dt_arr)
+            theta     = float(lib.controller_get_theta(self.ctrl))
+            theta_dot = float(lib.controller_get_theta_dot(self.ctrl))
 
-            theta     = np.array([self.data.qpos[self.hinge_qposadr]], dtype=np.float32)
-            theta_dot = np.array([self.data.qvel[self.hinge_qposadr]], dtype=np.float32)
-            slide_vel = np.array([self.data.qvel[self.slide_qposadr]], dtype=np.float32)
-            dt_arr    = np.array([dt], dtype=np.float32)
+            # Full control step
+            cmd = float(lib.update_controller(self.ctrl, accel, gyro, slide, dt_arr))
 
-            # C++ step → cmd
-            cmd = float(lib.update_controller(
-                self.ctrl_ptr, theta, theta_dot, slide_vel, dt_arr
-            ))
-
-            # update drift display
-            self.drift_buffer.append(slide_vel[0])
-            drift = float(sum(self.drift_buffer)/len(self.drift_buffer))
+            # Drift display
+            self.drift_buffer.append(slide[0])
+            drift = sum(self.drift_buffer)/len(self.drift_buffer)
 
             self.data.ctrl[0] = cmd
             self.data.ctrl[1] = cmd
 
-            self.angle_label.config(
-                text=f"Angle = {np.rad2deg(theta[0]):.2f}°, Drift = {drift:.4f} m/s"
-            )
-            self.viewer.sync()
-            self.root.update()
+            self.status.config(text=(
+                f"θ     = {np.rad2deg(theta):.2f}°\n"
+                f"θ̇    = {theta_dot:.2f} rad/s\n"
+                f"Drift = {drift:.4f} m/s\n"
+                f"Accel=[{accel[0]:.2f},{accel[1]:.2f},{accel[2]:.2f}]\n"
+                f"Gyro =[ {gyro[0]:.2f},{gyro[1]:.2f},{gyro[2]:.2f}]"
+            ))
 
-            if abs(theta[0]) > FALL_THRESH:
-                print(f"Fallen at t={t:.3f}s")
-                break
-
-        print("Simulation complete.")
-        input("Press Enter to close…")
-        self.close()
+            self.viewer.sync(); self.root.update()
 
     def close(self):
-        lib.free_controller(self.ctrl_ptr)
+        lib.free_controller(self.ctrl)
         self.viewer.close()
         self.root.destroy()
 
-
-if __name__ == "__main__":
-    BalanceRoverEnv().run()
+if __name__=="__main__":
+    try:
+        BalanceRoverEnv().run()
+    except tk.TclError:
+        pass
