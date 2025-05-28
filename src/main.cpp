@@ -3,206 +3,146 @@
 #include <TimerInterrupt_Generic.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
-#include "step.h"
-#include <math.h>
+#include <step.h>
 
-// -------------------------------------------------------------
-// Pin definitions
-// -------------------------------------------------------------
-const int STEPPER1_DIR_PIN    = 16;
-const int STEPPER1_STEP_PIN   = 17;
-const int STEPPER2_DIR_PIN    = 4;
-const int STEPPER2_STEP_PIN   = 14;
-const int STEPPER_EN_PIN      = 15;
-const int TOGGLE_PIN          = 32;
+const int STEPPER1_DIR_PIN  = 16;
+const int STEPPER1_STEP_PIN = 17;
+const int STEPPER2_DIR_PIN  = 4;
+const int STEPPER2_STEP_PIN = 14;
+const int STEPPER_EN_PIN    = 15;
 
-const int ADC_CS_PIN          = 5;
-const int ADC_SCK_PIN         = 18;
-const int ADC_MISO_PIN        = 19;
-const int ADC_MOSI_PIN        = 23;
+const int ADC_CS_PIN        = 5;
+const int ADC_SCK_PIN       = 18;
+const int ADC_MISO_PIN      = 19;
+const int ADC_MOSI_PIN      = 23;
 
-// -------------------------------------------------------------
-// Timing constants
-// -------------------------------------------------------------
-const int PRINT_INTERVAL_MS   = 500;
-const int LOOP_INTERVAL_MS    = 10;
+const int TOGGLE_PIN        = 32;
+
+const int PRINT_INTERVAL    = 500;
+const int LOOP_INTERVAL     = 20;
 const int STEPPER_INTERVAL_US = 20;
 
-// -------------------------------------------------------------
-// PID tuning constants
-// -------------------------------------------------------------
-static constexpr float PI_VALUE    = 3.14159265358979323846f;
-static constexpr float DERIV_TAU   = 0.02f;
+const float kx = 20.0;
+const float VREF = 4.096;
 
-// adjust these gains to tune performance
-static float Kp = 200.0f;
-static float Ki =   10.0f;
-static float Kd = 200.0f;
-static float SMOOTH_TAU = 1.0f;
-
-// -------------------------------------------------------------
-// Wheel acceleration/deceleration constant
-// -------------------------------------------------------------
-static constexpr float MAX_WHEEL_ACCEL = 50.0f;  // rad/s^2
-// -------------------------------------------------------------
-
-// -------------------------------------------------------------
-// Global PID state
-// -------------------------------------------------------------
-static float integralSum    = 0.0f;
-static float prevError      = 0.0f;
-static float derivFiltered  = 0.0f;
-static float controlSmooth  = 0.0f;
-static unsigned long prevLoopMicros = 0;
-static float tiltBias       = 0.0f;
-
-// -------------------------------------------------------------
-// Hardware objects
-// -------------------------------------------------------------
-ESP32Timer stepTimer(3);
+ESP32Timer ITimer(3);
 Adafruit_MPU6050 mpu;
+
 step step1(STEPPER_INTERVAL_US, STEPPER1_STEP_PIN, STEPPER1_DIR_PIN);
 step step2(STEPPER_INTERVAL_US, STEPPER2_STEP_PIN, STEPPER2_DIR_PIN);
 
-// -------------------------------------------------------------
-// ISR: update steppers and toggle pin
-// -------------------------------------------------------------
-bool IRAM_ATTR onTimer(void*) {
-    step1.runStepper();
-    step2.runStepper();
-    static bool t = false;
-    digitalWrite(TOGGLE_PIN, t);
-    t = !t;
-    return true;
+bool TimerHandler(void* timerNo) {
+  static bool toggle = false;
+  step1.runStepper();
+  step2.runStepper();
+  digitalWrite(TOGGLE_PIN, toggle);
+  toggle = !toggle;
+  return true;
 }
 
-// -------------------------------------------------------------
-// Read 12-bit ADC via SPI
-// -------------------------------------------------------------
 uint16_t readADC(uint8_t channel) {
-    uint8_t tx0 = 0x06 | (channel >> 2);
-    uint8_t tx1 = (channel & 0x03) << 6;
-    digitalWrite(ADC_CS_PIN, LOW);
-    SPI.transfer(tx0);
-    uint8_t rx0 = SPI.transfer(tx1);
-    uint8_t rx1 = SPI.transfer(0x00);
-    digitalWrite(ADC_CS_PIN, HIGH);
-    return ((rx0 & 0x0F) << 8) | rx1;
+  uint8_t TXByte0 = 0x06 | (channel >> 2);
+  uint8_t TXByte1 = (channel & 0x03) << 6;
+  digitalWrite(ADC_CS_PIN, LOW);
+  SPI.transfer(TXByte0);
+  uint8_t RXByte0 = SPI.transfer(TXByte1);
+  uint8_t RXByte1 = SPI.transfer(0x00);
+  digitalWrite(ADC_CS_PIN, HIGH);
+  uint16_t result = ((RXByte0 & 0x0F) << 8) | RX1;
+  return result;
 }
 
 void setup() {
-    Serial.begin(115200);
-    pinMode(TOGGLE_PIN, OUTPUT);
+  Serial.begin(115200);
+  pinMode(TOGGLE_PIN, OUTPUT);
 
-    // Initialize MPU6050
-    if (!mpu.begin()) {
-        Serial.println("MPU6050 not found!");
-        while (1) delay(10);
-    }
-    mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
-    mpu.setGyroRange(MPU6050_RANGE_250_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) delay(10);
+  }
+  Serial.println("MPU6050 Found!");
 
-    // Calibrate tilt bias
-    delay(100);
-    sensors_event_t ea, eg, et;
-    mpu.getEvent(&ea, &eg, &et);
-    {
-        float ax0 = ea.acceleration.x / 16384.0f;
-        float az0 = ea.acceleration.z / 16384.0f;
-        tiltBias = atan2f(-ax0, az0);
-        Serial.print("tilt bias (rad): ");
-        Serial.println(tiltBias, 6);
-    }
+  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
 
-    // Attach stepper ISR
-    if (!stepTimer.attachInterruptInterval(STEPPER_INTERVAL_US, onTimer)) {
-        Serial.println("Failed to start stepper ISR");
-        while (1) delay(10);
-    }
+  if (!ITimer.attachInterruptInterval(STEPPER_INTERVAL_US, TimerHandler)) {
+    Serial.println("Failed to start stepper interrupt");
+    while (1) delay(10);
+  }
+  Serial.println("Initialised Interrupt for Stepper");
 
-    // Configure steppers
-    step1.setAccelerationRad(MAX_WHEEL_ACCEL);
-    step2.setAccelerationRad(MAX_WHEEL_ACCEL);
-    pinMode(STEPPER_EN_PIN, OUTPUT);
-    digitalWrite(STEPPER_EN_PIN, LOW);
+  step1.setAccelerationRad(15.0);
+  step2.setAccelerationRad(15.0);
 
-    // Setup ADC SPI
-    pinMode(ADC_CS_PIN, OUTPUT);
-    digitalWrite(ADC_CS_PIN, HIGH);
-    SPI.begin(ADC_SCK_PIN, ADC_MISO_PIN, ADC_MOSI_PIN, ADC_CS_PIN);
+  pinMode(STEPPER_EN_PIN, OUTPUT);
+  digitalWrite(STEPPER_EN_PIN, false);
 
-    // Initialize loop timer
-    prevLoopMicros = micros();
+  pinMode(ADC_CS_PIN, OUTPUT);
+  digitalWrite(ADC_CS_PIN, HIGH);
+  SPI.begin(ADC_SCK_PIN, ADC_MISO_PIN, ADC_MOSI_PIN, ADC_CS_PIN);
 }
 
 void loop() {
-    static unsigned long nextPrint = 0;
+  static float Kp = 300.0;
+  static float Ki = 40.0;
+  static float Kd = 300.0;
+  static float c = 0.96;
+  static unsigned long previous_time = millis();
+  static unsigned long printTimer = 0;
+  static unsigned long loopTimer = 0;
+  static float theta_n = 0.000;
+  static float integral = 0.0;
+  static float uoutput = 0.0;
+  static float tilt_angle_x = 0.0;
+  static float tilt_angle_y = 0.0;
+  static float tilt_angle_z = 0.0;
+  static float gyro_x = 0.0;
+  static float gyro_y = 0.0;
+  static float gyro_z = 0.0;
+  static float error = 0.0;
+  float speed1 = 0;
+  float speed2 = 0;
 
-    // Always keep these in scope for printing
-    float tilt      = 0.0f;
-    float tiltRate  = 0.0f;
+  if (millis() > loopTimer) {
+    loopTimer += LOOP_INTERVAL;
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
 
-    unsigned long nowMillis = millis();
-    unsigned long nowMicros = micros();
+    tilt_angle_x = a.acceleration.x / 9.67;
+    tilt_angle_y = a.acceleration.y / 9.67;
+    tilt_angle_z = a.acceleration.z / 9.67;
+    gyro_x = g.gyro.x;
+    gyro_y = g.gyro.y;
+    gyro_z = g.gyro.z;
 
-    // Control loop
-    if (nowMicros - prevLoopMicros >= LOOP_INTERVAL_MS * 1000UL) {
-        float dt = (nowMicros - prevLoopMicros) * 1e-6f;
-        prevLoopMicros = nowMicros;
-        if (dt < 1e-4f) dt = 1e-4f;
+    speed1 = step1.getSpeedRad();
+    speed2 = step2.getSpeedRad();
 
-        // Read IMU
-        sensors_event_t ea, eg, et;
-        mpu.getEvent(&ea, &eg, &et);
-        float ax    = ea.acceleration.x / 16384.0f;
-        float az    = ea.acceleration.z / 16384.0f;
-        float gyroY = eg.gyro.y;
+    unsigned long current_time = millis();
+    float dt = (current_time - previous_time) / 1000.0;
+    previous_time = current_time;
 
-        // Compute tilt and tilt rate
-        float rawTilt    = atan2f(-ax, az);
-        tilt             = rawTilt - tiltBias;
-        tiltRate         = (gyroY / 131.0f) * (PI_VALUE / 180.0f);
+    theta_n = (1 - c) * tilt_angle_z + c * (gyro_y * dt + theta_n);
 
-        // PID derivative
-        float derivRaw   = (tilt - prevError) / dt;
-        float alpha      = dt / (DERIV_TAU + dt);
-        derivFiltered  += alpha * (derivRaw - derivFiltered);
+    float reference = -0.05;
+    error = reference - theta_n;
 
-        // PID output before smoothing
-        float controlRaw = Kp * tilt + Ki * integralSum + Kd * derivFiltered;
-        if (controlRaw > -1e6f && controlRaw < 1e6f) {
-            integralSum += tilt * dt;
-        }
+    float derivative = -gyro_y;
+    integral += error * dt;
 
-        // Constrain and smooth
-        float controlLimited = constrain(controlRaw, -3e5f, 3e5f);
-        prevError            = tilt;
-        controlSmooth       += (dt / SMOOTH_TAU) * (controlLimited - controlSmooth);
+    uoutput = Kp * error + Ki * integral + Kd * derivative;
 
-        // —— Predictive stop logic —————————————————————
-        float wheelSpeed    = controlSmooth;
-        float stopTime      = fabs(wheelSpeed) / MAX_WHEEL_ACCEL;
-        float predictedTilt = tilt + tiltRate * stopTime;
+    step1.setTargetSpeedRad(-uoutput);
+    step2.setTargetSpeedRad(uoutput);
+  }
 
-        // If predicted tilt crosses zero (or is very small), stop wheels now
-        if (predictedTilt * tilt <= 0.0f || fabs(predictedTilt) < 0.001f) {
-            step1.setTargetSpeedRad(0.0f);
-            step2.setTargetSpeedRad(0.0f);
-        } else {
-            step1.setTargetSpeedRad( controlSmooth);
-            step2.setTargetSpeedRad(-controlSmooth);
-        }
-        // ——————————————————————————————————————————————
-
-        // Diagnostic print
-        if (nowMillis >= nextPrint) {
-            nextPrint = nowMillis + PRINT_INTERVAL_MS;
-            float voltage = (readADC(0) * 4.096f) / 4095.0f;
-            Serial.print("control: ");       Serial.print(controlSmooth,4);
-            Serial.print("  tilt (mrad): "); Serial.print(tilt*1000,2);
-            Serial.print("  rate: ");         Serial.print(tiltRate,4);
-            Serial.print("  predTilt: ");     Serial.println(predictedTilt,4);
-        }
-    }
+  if (millis() > printTimer) {
+    printTimer += PRINT_INTERVAL;
+    Serial.print("Speed1: ");
+    Serial.print(speed1);
+    Serial.print(" | Speed2: ");
+    Serial.print(speed2);
+    Serial.println();
+  }
 }
