@@ -113,7 +113,7 @@ void loop() {
     tilt_angle_y = a.acceleration.y / 9.67;
     tilt_angle_z = a.acceleration.z / 9.67;
     gyro_x = g.gyro.x;
-    gyro_y = g.gyro.y;
+    gyro_y = g.gyro.pitch;
     gyro_z = g.gyro.z;
 
     speed1 = step1.getSpeedRad();
@@ -142,7 +142,9 @@ void loop() {
     Serial.print("Speed1: ");
     Serial.print(speed1);
     Serial.print(" | Speed2: ");
+     Serial.print(" | Speed2: ");
     Serial.print(speed2);
+    Serial.print(tilt_angle_z, 4);
     Serial.println();
   }
 }
