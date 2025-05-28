@@ -31,24 +31,30 @@ const int STEPPER_INTERVAL_US = 20;
 // -------------------------------------------------------------
 // PID tuning constants
 // -------------------------------------------------------------
-static constexpr float Pi        = 3.14159265358979323846f;
-static constexpr float DERIV_TAU = 0.02f;
+static constexpr float PI_VALUE    = 3.14159265358979323846f;
+static constexpr float DERIV_TAU   = 0.02f;
 
 // adjust these gains to tune performance
 static float Kp = 200.0f;
-static float Ki =   5.0f;
+static float Ki =   10.0f;
 static float Kd = 200.0f;
 static float SMOOTH_TAU = 1.0f;
 
 // -------------------------------------------------------------
+// Wheel acceleration/deceleration constant
+// -------------------------------------------------------------
+static constexpr float MAX_WHEEL_ACCEL = 50.0f;  // rad/s^2
+// -------------------------------------------------------------
+
+// -------------------------------------------------------------
 // Global PID state
 // -------------------------------------------------------------
-static float integral    = 0.0f;
-static float prev_error  = 0.0f;
-static float d_filtered  = 0.0f;
-static float u_smoothed  = 0.0f;
-static unsigned long prev_loop_micros = 0;
-static float tilt_bias   = 0.0f;
+static float integralSum    = 0.0f;
+static float prevError      = 0.0f;
+static float derivFiltered  = 0.0f;
+static float controlSmooth  = 0.0f;
+static unsigned long prevLoopMicros = 0;
+static float tiltBias       = 0.0f;
 
 // -------------------------------------------------------------
 // Hardware objects
@@ -104,9 +110,9 @@ void setup() {
     {
         float ax0 = ea.acceleration.x / 16384.0f;
         float az0 = ea.acceleration.z / 16384.0f;
-        tilt_bias = atan2f(-ax0, az0);
-        Serial.print("tilt_bias (rad): ");
-        Serial.println(tilt_bias, 6);
+        tiltBias = atan2f(-ax0, az0);
+        Serial.print("tilt bias (rad): ");
+        Serial.println(tiltBias, 6);
     }
 
     // Attach stepper ISR
@@ -116,8 +122,8 @@ void setup() {
     }
 
     // Configure steppers
-    step1.setAccelerationRad(10.0f);
-    step2.setAccelerationRad(10.0f);
+    step1.setAccelerationRad(MAX_WHEEL_ACCEL);
+    step2.setAccelerationRad(MAX_WHEEL_ACCEL);
     pinMode(STEPPER_EN_PIN, OUTPUT);
     digitalWrite(STEPPER_EN_PIN, LOW);
 
@@ -127,63 +133,76 @@ void setup() {
     SPI.begin(ADC_SCK_PIN, ADC_MISO_PIN, ADC_MOSI_PIN, ADC_CS_PIN);
 
     // Initialize loop timer
-    prev_loop_micros = micros();
+    prevLoopMicros = micros();
 }
 
 void loop() {
     static unsigned long nextPrint = 0;
 
-    // Always keep theta/theta_dot in scope for printing
-    float theta     = 0.0f;
-    float theta_dot = 0.0f;
+    // Always keep these in scope for printing
+    float tilt      = 0.0f;
+    float tiltRate  = 0.0f;
 
     unsigned long nowMillis = millis();
     unsigned long nowMicros = micros();
 
     // Control loop
-    if (nowMicros - prev_loop_micros >= LOOP_INTERVAL_MS * 1000UL) {
-        float dt = (nowMicros - prev_loop_micros) * 1e-6f;
-        prev_loop_micros = nowMicros;
+    if (nowMicros - prevLoopMicros >= LOOP_INTERVAL_MS * 1000UL) {
+        float dt = (nowMicros - prevLoopMicros) * 1e-6f;
+        prevLoopMicros = nowMicros;
         if (dt < 1e-4f) dt = 1e-4f;
 
         // Read IMU
         sensors_event_t ea, eg, et;
         mpu.getEvent(&ea, &eg, &et);
-        float ax     = ea.acceleration.x / 16384.0f;
-        float az     = ea.acceleration.z / 16384.0f;
-        float gyro_y = eg.gyro.y;
+        float ax    = ea.acceleration.x / 16384.0f;
+        float az    = ea.acceleration.z / 16384.0f;
+        float gyroY = eg.gyro.y;
 
-        // Compute tilt and rate
-        float raw        = atan2f(-ax, az);
-        theta            = raw - tilt_bias;
-        theta_dot        = (gyro_y / 131.0f) * (PI / 180.0f);
+        // Compute tilt and tilt rate
+        float rawTilt    = atan2f(-ax, az);
+        tilt             = rawTilt - tiltBias;
+        tiltRate         = (gyroY / 131.0f) * (PI_VALUE / 180.0f);
 
-        // PID calculations
-        float d_raw    = (theta - prev_error) / dt;
-        float alpha    = dt / (DERIV_TAU + dt);
-        d_filtered    += alpha * (d_raw - d_filtered);
+        // PID derivative
+        float derivRaw   = (tilt - prevError) / dt;
+        float alpha      = dt / (DERIV_TAU + dt);
+        derivFiltered  += alpha * (derivRaw - derivFiltered);
 
-        float u_raw    = Kp * theta + Ki * integral + Kd * d_filtered;
-        if (u_raw > -1e6f && u_raw < 1e6f)
-            integral += theta * dt;
+        // PID output before smoothing
+        float controlRaw = Kp * tilt + Ki * integralSum + Kd * derivFiltered;
+        if (controlRaw > -1e6f && controlRaw < 1e6f) {
+            integralSum += tilt * dt;
+        }
 
-        float u_pid    = constrain(u_raw, -3e5f, 3e5f);
-        prev_error     = theta;
+        // Constrain and smooth
+        float controlLimited = constrain(controlRaw, -3e5f, 3e5f);
+        prevError            = tilt;
+        controlSmooth       += (dt / SMOOTH_TAU) * (controlLimited - controlSmooth);
 
-        // Smooth output
-        u_smoothed    += (dt / SMOOTH_TAU) * (u_pid - u_smoothed);
+        // —— Predictive stop logic —————————————————————
+        float wheelSpeed    = controlSmooth;
+        float stopTime      = fabs(wheelSpeed) / MAX_WHEEL_ACCEL;
+        float predictedTilt = tilt + tiltRate * stopTime;
 
-        // Drive steppers
-        step1.setTargetSpeedRad( u_smoothed);
-        step2.setTargetSpeedRad(-u_smoothed);
+        // If predicted tilt crosses zero (or is very small), stop wheels now
+        if (predictedTilt * tilt <= 0.0f || fabs(predictedTilt) < 0.001f) {
+            step1.setTargetSpeedRad(0.0f);
+            step2.setTargetSpeedRad(0.0f);
+        } else {
+            step1.setTargetSpeedRad( controlSmooth);
+            step2.setTargetSpeedRad(-controlSmooth);
+        }
+        // ——————————————————————————————————————————————
 
-        // Diagnostic print inside control block
+        // Diagnostic print
         if (nowMillis >= nextPrint) {
             nextPrint = nowMillis + PRINT_INTERVAL_MS;
-            float v = (readADC(0) * 4.096f) / 4095.0f;
-            Serial.print("u_sm: ");       Serial.print(u_smoothed,4);
-            Serial.print("  theta(mrad): "); Serial.print(theta*1000,2);
-            Serial.print("  V(A0): ");    Serial.println(v,3);
+            float voltage = (readADC(0) * 4.096f) / 4095.0f;
+            Serial.print("control: ");       Serial.print(controlSmooth,4);
+            Serial.print("  tilt (mrad): "); Serial.print(tilt*1000,2);
+            Serial.print("  rate: ");         Serial.print(tiltRate,4);
+            Serial.print("  predTilt: ");     Serial.println(predictedTilt,4);
         }
     }
 }
