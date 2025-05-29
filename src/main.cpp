@@ -12,10 +12,6 @@ const int STEPPER2_DIR_PIN   = 4;
 const int STEPPER2_STEP_PIN  = 14;
 const int STEPPER_EN_PIN     = 15;
 const int TOGGLE_PIN         = 32;
-const int ADC_CS_PIN         = 5;
-const int ADC_SCK_PIN        = 18;
-const int ADC_MISO_PIN       = 19;
-const int ADC_MOSI_PIN       = 23;
 
 // === timing ===
 const int PRINT_INTERVAL      = 500;   // ms
@@ -54,16 +50,6 @@ bool TimerHandler(void*) {
 }
 
 // read 12-bit SPI ADC, channel 0–7
-uint16_t readADC(uint8_t channel) {
-  uint8_t tx0 = 0x06 | (channel >> 2);
-  uint8_t tx1 = (channel & 0x03) << 6;
-  digitalWrite(ADC_CS_PIN, LOW);
-    SPI.transfer(tx0);
-    uint8_t rx0 = SPI.transfer(tx1);
-    uint8_t rx1 = SPI.transfer(0x00);
-  digitalWrite(ADC_CS_PIN, HIGH);
-  return uint16_t(((rx0 & 0x0F) << 8) | rx1);
-}
 
 void setup() {
   Serial.begin(115200);
@@ -80,10 +66,6 @@ void setup() {
   mpu.setGyroRange(MPU6050_RANGE_250_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
 
-  // SPI ADC
-  pinMode(ADC_CS_PIN, OUTPUT);
-  digitalWrite(ADC_CS_PIN, HIGH);
-  SPI.begin(ADC_SCK_PIN, ADC_MISO_PIN, ADC_MOSI_PIN, ADC_CS_PIN);
 
   // Stepper interrupt
   if (!ITimer.attachInterruptInterval(STEPPER_INTERVAL_US, TimerHandler)) {
@@ -149,9 +131,7 @@ void loop() {
     outerTimer += OUTER_INTERVAL;
 
     // read pot → desiredPosition
-    float adcRaw  = readADC(0);
-    float voltage = (adcRaw / 4095.0) * VREF;
-    desiredPosition = kx * (voltage - VREF/2.0);
+    desiredPosition = 0.0;
 
     // PI on position → tiltSetpoint
     float posErr = desiredPosition - positionEstimate;
