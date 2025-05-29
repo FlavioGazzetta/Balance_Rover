@@ -31,7 +31,7 @@ const float kx   = 20.0;    // [rad/V]
 const float VREF = 4.096;   // ADC reference voltage
 
 // === outer loop gain ===
-const float Kp_outer = 0.3;
+const float Kp_outer = 0.5;
 
 // === objects ===
 ESP32Timer    ITimer(3);
@@ -135,7 +135,7 @@ void loop() {
 
     // PI on position → tiltSetpoint
     float posErr = desiredPosition - positionEstimate;
-    tiltSetpoint = Kp_outer * posErr + REFERENCE_ANGLE;
+    tiltSetpoint = Kp_outer * posErr;
     tiltSetpoint = constrain(
       tiltSetpoint,
       REFERENCE_ANGLE - 0.1,
