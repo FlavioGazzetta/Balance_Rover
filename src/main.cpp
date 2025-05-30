@@ -24,14 +24,10 @@ const float Kp_inner        = 1000.0;
 const float Ki_inner        =    1.0;
 const float Kd_inner        =  200.0;
 const float c               =  0.96;   // complementary filter coefficient
-const float REFERENCE_ANGLE = -0.087;  // radians
-
-// === ADC → position scaling ===
-const float kx   = 20.0;    // [rad/V]
-const float VREF = 4.096;   // ADC reference voltage
+const float REFERENCE_ANGLE = -0.055;  // radians
 
 // === outer loop gain ===
-const float Kp_outer = 0.5;
+const float Kp_outer = 0.3;
 
 // === objects ===
 ESP32Timer    ITimer(3);
@@ -114,7 +110,15 @@ void loop() {
     theta_n = (1-c)*tilt_acc_z + c*(theta_n + gyro_y*dt);
 
     // compute control
-    error_inner = (REFERENCE_ANGLE + tiltSetpoint) - theta_n;
+    if(abs(REFERENCE_ANGLE - theta_n) < 0.01){
+
+      error_inner = (REFERENCE_ANGLE + tiltSetpoint) - theta_n;
+
+    } else{
+
+      error_inner = (REFERENCE_ANGLE) - theta_n;
+
+    }
     integral   += error_inner * dt;
     float derivative = -gyro_y;
     uoutput = Kp_inner*error_inner
@@ -138,8 +142,8 @@ void loop() {
     tiltSetpoint = Kp_outer * posErr;
     tiltSetpoint = constrain(
       tiltSetpoint,
-      REFERENCE_ANGLE - 0.1,
-      REFERENCE_ANGLE + 0.1
+      -0.086 - 0.1,
+      -0.086 + 0.1
     );
   }
 
