@@ -24,7 +24,7 @@ const float Kp_inner        = 1000.0;
 const float Ki_inner        =    1.0;
 const float Kd_inner        =  200.0;
 const float c               =  0.96;   // complementary filter coefficient
-const float REFERENCE_ANGLE = -0.055;  // radians
+const float REFERENCE_ANGLE = -0.045;  // radians
 
 // === outer loop gain ===
 const float Kp_outer = 0.3;
