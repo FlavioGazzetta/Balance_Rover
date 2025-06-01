@@ -182,12 +182,16 @@ void handleCmd(){
   else if (a=="left_stop"){
     wheelLeftMode=false;
     freezePosition=true;
-    freezePositionPos=g_positionEstimate;
+    step1.setTargetSpeedRad(0);  // left
+    step2.setTargetSpeedRad(0);  // right
+    delay(40);
   }
   else if (a=="right_stop"){
     wheelRightMode=false;
     freezePosition=true;
-    freezePositionPos=g_positionEstimate;
+    step1.setTargetSpeedRad(0);  // left
+    step2.setTargetSpeedRad(0);  // right
+    delay(40);
   }
   else{ server.send(400,"text/plain","Unknown command"); return; }
 
@@ -311,17 +315,8 @@ void loop(){
     }
     else{                         // straight drive – apply auto-sync
       /* PI controller on measured speed difference */
-      float diff = sp1_meas - sp2_meas;             // +ve = left faster
-      float corr = SYNC_KP * diff;
-      if(abs(diff) > SYNC_DEADBAND){
-        /* within dead-band – softly bleed integral */
-        step1.setTargetSpeedRad(uout + corr);  // left
-        step2.setTargetSpeedRad(uout - corr);  // right
-      }
-
       step1.setTargetSpeedRad(uout);  // left
       step2.setTargetSpeedRad(uout);  // right
-
       
     }
   }
@@ -350,3 +345,6 @@ void loop(){
     );
   }
 }
+
+
+/* idea: make the if a == left_stop and the if a == right_stop functions set the target speed to 0 to make the wheels stop at the end of the rotation */
