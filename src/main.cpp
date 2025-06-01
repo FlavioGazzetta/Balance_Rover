@@ -1,8 +1,8 @@
 /********************************************************************
- * ESP32 Balance-Bot – combined firmware
+ * ESP32 Balance-Bot – combined firmware WITH TURNING SUPPORT
  *  • Single-loop inner-PID + outer-P controller (exact values)
- *  • Wi-Fi UI: Forward / Back / Stop buttons + numeric set-point
- *  • Manual-drive tilt offset with “freeze on release”
+ *  • Wi-Fi UI: Forward / Back / Stop + Left / Right buttons + numeric set-point
+ *  • Manual-drive tilt offset (“freeze on release”) + spin in place
  *  • Dynamic-Kd boost + complementary filter
  ********************************************************************/
 
@@ -51,9 +51,10 @@ const float Kd_BOOST_FACTOR       = 100.0f;
 const float Kp_outer = 0.3f;
 
 /* ---------------------------------------------------------------
- *                MANUAL-DRIVE (Forward / Back)
+ *                MANUAL-DRIVE (Forward / Back & TURN)
  * --------------------------------------------------------------*/
-const float TILT_MANUAL = 0.05f; // rad ≈ 0.57° additional tilt
+const float TILT_MANUAL = 0.2f; // rad ≈ 0.57° additional tilt
+const float TURN_SPEED  = 4.0f;  // rad/s differential wheel speed for turning
 
 /* ---------------------------------------------------------------
  *                         OBJECTS
@@ -77,11 +78,15 @@ volatile float manualTiltOffset  = 0.0f;    // ±TILT_MANUAL
 volatile bool  freezePosition    = false;   // true after “Stop” released
 volatile float freezePositionPos = 0.0f;    // position value at freeze
 
+// --- NEW: turning flags ---
+volatile bool  manualSpinMode    = false;   // true while Left/Right held
+volatile float manualSpinOffset  = 0.0f;    // ±TURN_SPEED
+
 // — expose position to the /cmd handler so that “Stop” can latch it —
 volatile float g_positionEstimate = 0.0f;
 
 /* ----------------------------------------------------------------
- *  HTML PAGE  – three-button UI with active-state colours
+ *  HTML PAGE  – five-button UI with active-state colours
  * ----------------------------------------------------------------*/
 const char HOMEPAGE[] PROGMEM = R"====(
 <!DOCTYPE html>
@@ -138,15 +143,19 @@ function bind(id,start){
 }
 
 window.addEventListener('load',()=>{
-  bind('btnBack','back_start');
-  bind('btnFwd' ,'fwd_start');
+  bind('btnBack' ,'back_start');
+  bind('btnFwd'  ,'fwd_start');
+  bind('btnLeft' ,'left_start');
+  bind('btnRight','right_start');
 });
 </script>
 </head>
 <body>
   <h2>ESP32&nbsp;Balance-Bot</h2>
 
-  <button id="btnBack">Backward</button><br>
+  <button id="btnBack">Backward</button>
+  <button id="btnLeft">Left</button>
+  <button id="btnRight">Right</button>
   <button id="btnFwd">Forward</button>
 
   <hr>
@@ -178,11 +187,16 @@ void handleCmd() {
     return;
   }
   String a = server.arg("act");
-  if      (a=="fwd_start")  { manualMode=true;  manualTiltOffset= TILT_MANUAL; freezePosition=false; }
-  else if (a=="back_start") { manualMode=true;  manualTiltOffset= -TILT_MANUAL; freezePosition=false; }
+  if      (a=="fwd_start")   { manualMode=true;  manualTiltOffset= TILT_MANUAL;  freezePosition=false; }
+  else if (a=="back_start")  { manualMode=true;  manualTiltOffset=-TILT_MANUAL;  freezePosition=false; }
+  else if (a=="left_start")  { manualSpinMode=true; manualSpinOffset=-TURN_SPEED; freezePosition=false; }
+  else if (a=="right_start") { manualSpinMode=true; manualSpinOffset= TURN_SPEED; freezePosition=false; }
   else {
+    // stop – reset manual modes & prepare to hold position
     manualTiltOffset=0;
     manualMode=false;
+    manualSpinOffset=0;
+    manualSpinMode=false;
     freezePosition=true;
     freezePositionPos=g_positionEstimate;
   }
@@ -203,7 +217,7 @@ bool IRAM_ATTR TimerHandler(void*) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("=== ESP32 Balance-Bot – Combined Firmware ===");
+  Serial.println("=== ESP32 Balance-Bot – Combined Firmware (TURN) ===");
 
   /* ---------- Wi-Fi Soft-AP ---------- */
   WiFi.softAP("ESP32_BalanceBot","12345678");
@@ -291,10 +305,12 @@ void loop() {
       Kd_eff *= Kd_BOOST_FACTOR;
     }
 
-    uout = Kp_inner * err_inner + Ki_inner * integral + Kd_eff   * deriv;
+    uout = Kp_inner * err_inner + Ki_inner * integral + Kd_eff * deriv;
 
-    step1.setTargetSpeedRad(uout);
-    step2.setTargetSpeedRad(uout);
+    /* --- apply turning offset when requested --- */
+    float spin = manualSpinOffset;  // ±TURN_SPEED or 0
+    step1.setTargetSpeedRad(uout + spin);
+    step2.setTargetSpeedRad(uout - spin);
   }
 
   /* ----------------- OUTER ----------------- */
@@ -302,7 +318,7 @@ void loop() {
     outerT += OUTER_INTERVAL;
 
     if (manualMode) {
-      tiltSP = manualTiltOffset;             // override while button held
+      tiltSP = manualTiltOffset;             // override while Fwd/Back button held
     } else {
       desiredPos = freezePosition ? freezePositionPos : g_webDesired;
       float posErr = desiredPos - posEst;
@@ -313,9 +329,9 @@ void loop() {
   /* --------------- DIAGNOSTICS --------------- */
   if (now - printT >= PRINT_INTERVAL) {
     printT += PRINT_INTERVAL;
-    Serial.printf("θ_ref %.3f | tiltSP %.3f | θ %.3f | pos %.3f | sp1 %.3f | sp2 %.3f | desPos %.3f | man %d | freeze %d\n",
+    Serial.printf("θ_ref %.3f | tiltSP %.3f | θ %.3f | pos %.3f | sp1 %.3f | sp2 %.3f | desPos %.3f | manFwd %d | manTurn %d | freeze %d\n",
                   REFERENCE_ANGLE, tiltSP, theta, posEst,
                   step1.getSpeedRad(), step2.getSpeedRad(),
-                  desiredPos, manualMode, freezePosition);
+                  desiredPos, manualMode, manualSpinMode, freezePosition);
   }
 }
