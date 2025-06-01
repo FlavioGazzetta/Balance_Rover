@@ -23,43 +23,45 @@
       <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
 
       <!-- Left wheel -->
-      <body name="wheel_L" pos="0  0.05 0.02">
+      <body name="wheel_L" pos="0 0.05 0.02">
         <joint name="L_spin" type="hinge" axis="0 1 0" limited="false"/>
         <inertial pos="0 0 0" mass="0.3" diaginertia="0.0001 0.0001 0.0001"/>
-        <geom  type="cylinder"
-               size="0.06 0.005"
-               quat="0.7071 0.7071 0 0"
-               contype="1" conaffinity="1"
-               friction="1 0.1 0.1"
-               rgba="0.2 0.2 0.2 1"/>
+        <geom type="cylinder" size="0.06 0.005"
+              quat="0.7071 0.7071 0 0"
+              contype="1" conaffinity="1"
+              friction="1 0.1 0.1"
+              rgba="0.2 0.2 0.2 1"/>
       </body>
 
       <!-- Right wheel -->
       <body name="wheel_R" pos="0 -0.05 0.02">
         <joint name="R_spin" type="hinge" axis="0 1 0" limited="false"/>
         <inertial pos="0 0 0" mass="0.3" diaginertia="0.0001 0.0001 0.0001"/>
-        <geom  type="cylinder"
-               size="0.06 0.005"
-               quat="0.7071 0.7071 0 0"
-               contype="1" conaffinity="1"
-               friction="1 0.1 0.1"
-               rgba="0.2 0.2 0.2 1"/>
+        <geom type="cylinder" size="0.06 0.005"
+              quat="0.7071 0.7071 0 0"
+              contype="1" conaffinity="1"
+              friction="1 0.1 0.1"
+              rgba="0.2 0.2 0.2 1"/>
       </body>
 
       <!-- Pendulum pole -->
       <body name="pole" pos="0 0 0.04">
         <joint name="hinge" type="hinge" axis="0 1 0" damping="0.0" limited="false"/>
-        <geom type="capsule"
-              fromto="0 0 0  0 0 0.5"
-              size="0.02"
-              rgba="0.8 0.3 0.3 1"/>
-      </body>
+        <geom type="capsule" fromto="0 0 0  0 0 0.5" size="0.02" rgba="0.8 0.3 0.3 1"/>
 
-    </body> <!-- Missing closing tag for base added here -->
+        <!-- site at bottom of the pole for the IMU -->
+        <site name="imu_site" pos="0 0 0" size="0.01" rgba="0 1 0 0.5"/>
+      </body>
+    </body>
   </worldbody>
 
+  <!-- corrected sensor block -->
+  <sensor>
+    <accelerometer name="pole_accel" site="imu_site"/>
+    <gyro          name="pole_gyro"  site="imu_site"/>
+  </sensor>
+
   <actuator>
-    <!-- Two independent wheel motors -->
     <motor joint="L_spin" name="u_L" ctrlrange="-3 3" gear="100"/>
     <motor joint="R_spin" name="u_R" ctrlrange="-3 3" gear="100"/>
   </actuator>
@@ -69,397 +71,380 @@
 
 === File: /c/Users/User/Documents/Balance_Rover/Controller/balance_rover_env.py ===
 #!/usr/bin/env python3
-"""
-BalanceRoverEnv: environment setup, UI, and simulation loop.
-Delegates all control logic to the C++ controller library via ctypes.
-Mirrors the Python env file exactly, calling on_fwd_press/release and on_bwd_press/release,
-using update_controller, and exposing all live-tunable parameters.
-"""
-
 import sys, os
 from pathlib import Path
 import numpy as np
 import mujoco, mujoco.viewer
 import tkinter as tk
-from ctypes import CDLL, c_void_p, c_float, c_bool
+from collections import deque
+from ctypes import CDLL, c_void_p, c_float
+import numpy.ctypeslib as ctl
 
-# Load & bind C++ controller DLL
-dll_path = Path(__file__).parent / "controller_lib.dll"
+# 1) Load & bind C++ controller
+script_dir = Path(__file__).parent.resolve()
+dll_path   = script_dir/"controller_lib.dll"
 if not dll_path.exists():
-    print(f"Error: controller_lib.dll not found at {dll_path}")
-    sys.exit(1)
-# Ensure DLL search paths
+    sys.exit(f"Error: controller_lib.dll not found in {script_dir}")
+
+# Windows DLL search paths
 mujoco_lib = os.getenv('MUJOCO_LIB', r'C:\mujoco\mujoco210\bin')
 mingw_bin  = r'C:\msys64\mingw64\bin'
-if hasattr(os, 'add_dll_directory'):
-    os.add_dll_directory(str(dll_path.parent))
+if os.name=="nt" and hasattr(os, 'add_dll_directory'):
+    os.add_dll_directory(str(script_dir))
     if os.path.isdir(mujoco_lib): os.add_dll_directory(mujoco_lib)
     if os.path.isdir(mingw_bin):  os.add_dll_directory(mingw_bin)
 else:
-    os.environ['PATH'] = os.pathsep.join([
-        str(dll_path.parent), mujoco_lib, mingw_bin,
-        os.environ.get('PATH','')
-    ])
+    os.environ['PATH'] += os.pathsep + str(script_dir)
 
 lib = CDLL(str(dll_path))
-# Controller lifecycle
-lib.make_controller.argtypes    = [c_float]
-lib.make_controller.restype     = c_void_p
-lib.free_controller.argtypes    = [c_void_p]
-lib.free_controller.restype     = None
-# Manual-drive C++ bindings
-for fn in ['on_fwd_press','on_fwd_release','on_bwd_press','on_bwd_release']:
+lib.make_controller.restype = c_void_p
+lib.free_controller.argtypes = [c_void_p]
+
+# Bind update/controller + manual callbacks
+float_arr = ctl.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+lib.update_controller.argtypes = [c_void_p, float_arr, float_arr, float_arr, float_arr]
+lib.update_controller.restype  = c_float
+
+for fn in ("on_fwd_press","on_fwd_release","on_bwd_press","on_bwd_release"):
     f = getattr(lib, fn)
     f.argtypes = [c_void_p]
     f.restype  = None
 
-# Live-tunable C++ parameters (name, min, max, default)
-cpp_params = [
-    ('Kp_ang',   0.0, 100.0, 15.0),    # lower outer-loop P gain
-    ('Ki_ang',   0.0, 50.0,   5.0),     # lower outer-loop I gain
-    ('Kd_ang',   0.0, 5.0,    0.25),    # lower outer-loop D gain
-    ('Kp_vel',   0.0, 50.0,  10.0),    # lower inner-loop P gain
-    ('Ki_vel',   0.0, 10.0,   0.25),   # lower inner-loop I gain
-    ('Kd_vel',   0.0, 1.0,    0.05),   # lower inner-loop D gain
-    ('DRIVE_GAIN',      0.0, 1.0, 0.1),     # reduced manual torque
-    ('DRIVE_RAMP_RATE', 0.0, 1.0, 0.05),    # slower ramp rate
-    ('SMOOTH_TAU',      0.1, 20.0, 10.0),   # increased smoothing time constant
-    ('OVERSHOOT_RATE',  0.0, 1.0, 0.01),    # slower manual decay
-    ('DEAD_BAND',       0.0, 0.5, 0.5*(np.pi/180)),  # slightly larger dead-band
-    ('DERIV_TAU',       0.0, 1.0, 0.04),   # slower derivative filter
-    ('OVERSHOOT_BIAS',  0.0, 1.0, 0.02),   # smaller bias
-    ('DRIFT_GAIN',     -2.0, 2.0, -0.1),   # gentler drift correction
-]
+# Bind all setters
+lib.set_Kp_ang.argtypes       = [c_float]
+lib.set_Ki_ang.argtypes       = [c_float]
+lib.set_Kd_ang.argtypes       = [c_float]
+lib.set_Kp_vel.argtypes       = [c_float]
+lib.set_Ki_vel.argtypes       = [c_float]
+lib.set_Kd_vel.argtypes       = [c_float]
+lib.set_drive_gain.argtypes   = [c_float]
+lib.set_drive_ramp.argtypes   = [c_float]
+lib.set_smooth_tau.argtypes   = [c_float]
+lib.set_overshoot_bias.argtypes = [c_float]
+lib.set_overshoot_rate.argtypes = [c_float]
+lib.set_drift_gain.argtypes   = [c_float]
+lib.set_drift_window.argtypes = [c_float]
 
-# Parameter setters generated in C++: bind them
-for name, mn, mx, init in cpp_params:
-    fn = getattr(lib, f'set_{name}', None)
-    if fn:
-        fn.argtypes = [c_float]
-        fn.restype  = None
-# PID update binding
-lib.update_controller.argtypes = [c_void_p, c_float, c_float, c_float, c_float]
-lib.update_controller.restype  = c_float
+# 2) Constants
+DRIFT_WINDOW = 5.0
 
-# Global simulation parameters
-globals_params = {
-    'INITIAL_ANGLE': 10.0,
-    'FALL_THRESH':   np.pi * 0.9,
-    'DRIFT_WINDOW':  5.0,
-    'DRIFT_GAIN':    -0.4,
-    'DRIVE_RAMP_RATE': 0.2,
-}
-
-def clamp(val, lo, hi): return max(lo, min(hi, val))
-
+# 3) Env
 class BalanceRoverEnv:
     def __init__(self):
-        xml = Path(__file__).with_name('balance_rover.xml')
-        if not xml.exists(): sys.exit('Error: balance_rover.xml not found')
-
-        # Load Mujoco model
+        xml = script_dir/"balance_rover.xml"
+        if not xml.exists():
+            sys.exit("Error: XML not found")
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.data  = mujoco.MjData(self.model)
         self.dt    = self.model.opt.timestep
 
-        # C++ controller
-        self.ctrl = lib.make_controller(c_float(self.dt))
+        # sensors & slide joint
+        self.acc_id  = mujoco.mj_name2id(self.model,mujoco.mjtObj.mjOBJ_SENSOR,"pole_accel")
+        self.gyro_id = mujoco.mj_name2id(self.model,mujoco.mjtObj.mjOBJ_SENSOR,"pole_gyro")
+        sid = mujoco.mj_name2id(self.model,mujoco.mjtObj.mjOBJ_JOINT,"slide")
+        self.slide_dof = self.model.jnt_dofadr[sid]
 
-        # Joint indices
-        hinge_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'hinge')
-        slide_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'slide')
-        self.hinge = self.model.jnt_qposadr[hinge_id]
-        self.slide = self.model.jnt_qposadr[slide_id]
+        self.ctrl = lib.make_controller()
+        self.drift_buffer = deque(maxlen=int(DRIFT_WINDOW/self.dt))
+        self.initial_angle = 0.0
 
-        # State
-        self.drive_target  = 0.0
-        self.drive_current = 0.0
-        self.manual_active = False
-        self.buf           = []
-
-        # Viewer & UI
-        self.viewer = mujoco.viewer.launch_passive(
-            self.model, self.data, key_callback=self._noop
-        )
-        self._init_ui()
+        self.viewer = mujoco.viewer.launch_passive(self.model,self.data,
+                                                   key_callback=lambda *a: None)
+        self._build_ui()
         self.respawn()
 
-    def _init_ui(self):
+    def _build_ui(self):
         self.root = tk.Tk()
-        self.root.title('Rover Control & Parameters')
+        self.root.title("Balance Rover - Tune All Params")
+        self.root.resizable(False, False)
 
-        # Forward/Backward buttons
-        btn_f = tk.Button(self.root, text='Forward',  width=10)
-        btn_b = tk.Button(self.root, text='Backward', width=10)
-        btn_f.grid(row=0, column=0, padx=5, pady=5)
-        btn_b.grid(row=0, column=1, padx=5, pady=5)
-        btn_f.bind('<ButtonPress-1>',  lambda e: lib.on_fwd_press(self.ctrl))
-        btn_f.bind('<ButtonRelease-1>',lambda e: lib.on_fwd_release(self.ctrl))
-        btn_b.bind('<ButtonPress-1>',  lambda e: lib.on_bwd_press(self.ctrl))
-        btn_b.bind('<ButtonRelease-1>',lambda e: lib.on_bwd_release(self.ctrl))
-
-        # Status label
-        self.lbl = tk.Label(
-            self.root,
-            text='Angle = 0.00°, Drift = 0.0000 m/s',
-            width=40
-        )
-        self.lbl.grid(row=1, column=0, columnspan=2, pady=(0,10))
-
-        # Sliders for C++ parameters
-        for i, (name, mn, mx, init) in enumerate(cpp_params, start=2):
-            scale = tk.Scale(
-                self.root,
-                label=name,
-                from_=mn,
-                to=mx,
-                resolution=(mx - mn) / 100 if mx > mn else mn / 100,
-                orient=tk.HORIZONTAL,
-                command=lambda v, n=name: getattr(lib, f'set_{n}')(c_float(float(v)))
-            )
-            scale.set(init)
-            scale.grid(row=i, column=0, columnspan=2, sticky='we', padx=5)
-
-        # Global parameter entries
-        row = 2 + len(cpp_params)
+        params = [
+            ("InitAngle (°)", None,            "0.0"),
+            ("Kp_ang",        lib.set_Kp_ang,   "30.0"),
+            ("Ki_ang",        lib.set_Ki_ang,   "10.0"),
+            ("Kd_ang",        lib.set_Kd_ang,    "0.5"),
+            ("Kp_vel",        lib.set_Kp_vel,   "20.0"),
+            ("Ki_vel",        lib.set_Ki_vel,    "0.5"),
+            ("Kd_vel",        lib.set_Kd_vel,    "0.1"),
+            ("DriveGain",     lib.set_drive_gain,"0.4"),
+            ("DriveRamp",     lib.set_drive_ramp,"0.2"),
+            ("SmoothTau",     lib.set_smooth_tau,"4.0"),
+            ("OvershootBias", lib.set_overshoot_bias,"0.10"),
+            ("OvershootRate", lib.set_overshoot_rate,"0.05"),
+            ("DriftGain",     lib.set_drift_gain,"-0.4"),
+            ("DriftWindow",   lib.set_drift_window,"5.0"),
+        ]
         self.entries = {}
-        for key in globals_params:
-            tk.Label(self.root, text=f'{key}:').grid(row=row, column=0, sticky='e')
-            e = tk.Entry(self.root, width=8)
-            e.insert(0, str(globals_params[key]))
-            e.grid(row=row, column=1, sticky='w')
-            self.entries[key] = e
-            row += 1
+        for i,(name,setter,default) in enumerate(params):
+            tk.Label(self.root,text=name).grid(row=i,column=0,sticky="e")
+            e = tk.Entry(self.root,width=8); e.insert(0,default)
+            e.grid(row=i,column=1,sticky="w")
+            self.entries[name] = (e,setter)
 
-        tk.Button(
-            self.root,
-            text='Update Globals',
-            command=self._update_globals
-        ).grid(row=row, column=0, columnspan=2, pady=5)
-        tk.Button(
-            self.root,
-            text='Respawn',
-            command=self.respawn
-        ).grid(row=row+1, column=0, columnspan=2, pady=(0,10))
+        tk.Button(self.root,text="Update Params",command=self._update_params)\
+          .grid(row=len(params),column=0,columnspan=2,pady=(5,5))
+        tk.Button(self.root,text="Respawn",command=self.respawn)\
+          .grid(row=len(params)+1,column=0,columnspan=2,pady=(0,10))
 
-    def _update_globals(self):
-        for key, entry in self.entries.items():
-            try:
-                globals_params[key] = float(entry.get())
-            except ValueError:
-                pass
-        print('Updated globals:', globals_params)
+        self.status = tk.Label(self.root,text="",width=40,justify="left")
+        self.status.grid(row=len(params)+2,column=0,columnspan=2,pady=(0,10))
 
-    def _noop(self, *args):
-        # disable keyboard control
-        pass
+        btn_f = tk.Button(self.root,text="Forward",width=10)
+        btn_b = tk.Button(self.root,text="Backward",width=10)
+        btn_f.grid(row=0,column=2,padx=5,pady=5)
+        btn_b.grid(row=1,column=2,padx=5,pady=5)
+        btn_f.bind("<ButtonPress-1>", lambda e: lib.on_fwd_press(self.ctrl))
+        btn_f.bind("<ButtonRelease-1>",lambda e: lib.on_fwd_release(self.ctrl))
+        btn_b.bind("<ButtonPress-1>", lambda e: lib.on_bwd_press(self.ctrl))
+        btn_b.bind("<ButtonRelease-1>",lambda e: lib.on_bwd_release(self.ctrl))
+
+    def _update_params(self):
+        for name,(entry,setter) in self.entries.items():
+            try: val=float(entry.get())
+            except: continue
+            if name=="InitAngle (°)":
+                self.initial_angle = val
+            elif setter:
+                setter(val)
 
     def respawn(self):
-        mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:] = 0.0
-        self.data.qvel[:] = 0.0
-        self.data.qpos[self.hinge] = np.deg2rad(globals_params['INITIAL_ANGLE'])
-        mujoco.mj_forward(self.model, self.data)
-        self.drive_current = 0.0
-        self.buf.clear()
+        mujoco.mj_resetData(self.model,self.data)
+        self.data.qpos[:] = 0; self.data.qvel[:] = 0; self.data.ctrl[:] = 0
+        hj = mujoco.mj_name2id(self.model,mujoco.mjtObj.mjOBJ_JOINT,"hinge")
+        self.data.qpos[self.model.jnt_qposadr[hj]] = np.deg2rad(self.initial_angle)
+        mujoco.mj_forward(self.model,self.data)
+        lib.free_controller(self.ctrl)
+        self.ctrl = lib.make_controller()
+        self.drift_buffer.clear()
 
     def run(self):
-        try:
-            while True:
-                mujoco.mj_step(self.model, self.data)
+        dt_arr = np.array([self.dt],dtype=np.float32)
+        while True:
+            mujoco.mj_step(self.model,self.data)
+            sd    = self.data.sensordata
+            accel = np.array(sd[self.acc_id:self.acc_id+3],dtype=np.float32)
+            gyro  = np.array(sd[self.gyro_id:self.gyro_id+3],dtype=np.float32)
+            slide = np.array([self.data.qvel[self.slide_dof]],dtype=np.float32)
 
-                # Drift correction
-                v = float(self.data.qvel[self.slide])
-                self.buf.append(v)
-                if len(self.buf) > int(globals_params['DRIFT_WINDOW'] / self.dt):
-                    self.buf.pop(0)
-                drift = sum(self.buf) / len(self.buf)
-                if not self.manual_active:
-                    self.drive_target = -drift * globals_params['DRIFT_GAIN']
+            cmd = float(lib.update_controller(self.ctrl, accel, gyro, slide, dt_arr))
 
-                # Manual ramp
-                err = self.drive_target - self.drive_current
-                d = globals_params['DRIVE_RAMP_RATE'] * self.dt
-                if err > d:
-                    self.drive_current += d
-                elif err < -d:
-                    self.drive_current -= d
-                else:
-                    self.drive_current = self.drive_target
+            self.drift_buffer.append(slide[0])
+            drift = sum(self.drift_buffer)/len(self.drift_buffer)
 
-                # Call C++ PID
-                theta = float(self.data.qpos[self.hinge])
-                thetad = float(self.data.qvel[self.hinge])
-                cmd = lib.update_controller(
-                    self.ctrl,
-                    c_float(theta),
-                    c_float(thetad),
-                    c_float(drift),
-                    c_float(self.dt)
-                )
+            self.data.ctrl[0]=cmd; self.data.ctrl[1]=cmd
+            self.status.config(text=(
+                f"InitAng= {self.initial_angle:.1f}°\n"
+                f"Cmd    = {cmd:.3f}\n"
+                f"Drift  = {drift:.4f} m/s"
+            ))
+            self.viewer.sync(); self.root.update()
 
-                # Apply and update UI
-                self.data.ctrl[0] = cmd
-                self.data.ctrl[1] = cmd
-                self.lbl.config(
-                    text=f"Angle = {np.degrees(theta):.2f}°, Drift = {drift:.4f} m/s"
-                )
-                self.viewer.sync()
-                self.root.update()
-        except tk.TclError:
-            # window closed
-            pass
-        finally:
-            lib.free_controller(self.ctrl)
-            print("Simulation terminated by user.")
+    def close(self):
+        lib.free_controller(self.ctrl)
+        self.viewer.close(); self.root.destroy()
 
-if __name__ == '__main__':
-    BalanceRoverEnv().run()
+if __name__=="__main__":
+    try:
+        BalanceRoverEnv().run()
+    except tk.TclError:
+        pass
 
 --------------------------------------
 
 === File: /c/Users/User/Documents/Balance_Rover/Controller/controller_lib.cpp ===
-#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <deque>
+#include <cmath>
+#include <cstring>
 
 extern "C" {
 
+// ————————————————————————————————————————————————————————————————————
+// Runtime‑tunable globals (defaults matching your Python PID)
+// ————————————————————————————————————————————————————————————————————
+static float g_Kp_ang        = 30.0f;
+static float g_Ki_ang        = 10.0f;
+static float g_Kd_ang        = 0.5f;
+
+static float g_Kp_vel        = 20.0f;
+static float g_Ki_vel        = 0.5f;
+static float g_Kd_vel        = 0.1f;
+
+static float g_DRIVE_GAIN    = 0.4f;
+static float g_DRIVE_RAMP    = 0.2f;
+static float g_SMOOTH_TAU    = 4.0f;
+
+static float g_OVERSHOOT_BIAS = 0.10f;
+static float g_OVERSHOOT_RATE = 0.05f;
+
+static float g_DRIFT_WINDOW  = 5.0f;
+static float g_DRIFT_GAIN    = -0.4f;
+
+// static constexpr things left unchanged:
+static constexpr float PI        = 3.14159265358979323846f;
+static constexpr float DEAD_BAND = (PI/180.0f) * 0.1f;
+static constexpr float DERIV_TAU = 0.02f;
+
 // —————————————————————————————————————————————————————————
-// Direct port of Python pid_controller.py logic
+// Dual‑loop PID implementation
 // —————————————————————————————————————————————————————————
-
-// INITIAL TUNING PARAMETERS (live-tunable via setters)
-static float Kp_ang       = 30.0f;
-static float Ki_ang       = 10.0f;
-static float Kd_ang       = 0.5f;
-static float Kp_vel       = 20.0f;
-static float Ki_vel       = 0.5f;
-static float Kd_vel       = 0.1f;
-
-static float DRIVE_GAIN      = 0.4f;    // N·m per button/key press
-static float DRIVE_RAMP_RATE = 0.2f;    // N·m per second
-static float SMOOTH_TAU      = 4.0f;    // seconds for exp smoothing
-static float OVERSHOOT_RATE  = 0.05f;   // manual drive decay (N·m per sec)
-
-static float FALL_THRESH     = 3.14159265358979323846f * 0.9f;
-static float DEAD_BAND       = 0.1f * (3.14159265358979323846f/180.0f);
-static float DERIV_TAU       = 0.02f;
-static float OVERSHOOT_BIAS  = 0.10f;
-static float DRIFT_WINDOW    = 5.0f;
-static float DRIFT_GAIN      = -0.4f;
-// —————————————————————————————————————————————————————————
-
-// Setter functions for live tuning
-#define DECL_SET(name) void set_##name(float v) { name = v; }
-DECL_SET(Kp_ang)       DECL_SET(Ki_ang)       DECL_SET(Kd_ang)
-DECL_SET(Kp_vel)       DECL_SET(Ki_vel)       DECL_SET(Kd_vel)
-DECL_SET(DRIVE_GAIN)   DECL_SET(DRIVE_RAMP_RATE) DECL_SET(SMOOTH_TAU)
-DECL_SET(OVERSHOOT_RATE) DECL_SET(DEAD_BAND)    DECL_SET(DERIV_TAU)
-DECL_SET(OVERSHOOT_BIAS) DECL_SET(DRIFT_GAIN)   // FALL_THRESH, DRIFT_WINDOW not live-tuned
-
-// DualPID struct
 struct DualPID {
     float Kp, Ki, Kd;
-    float integral = 0.0f;
-    float prev_error = 0.0f;
-    float d_filtered = 0.0f;
-    DualPID(float p, float i, float d) : Kp(p), Ki(i), Kd(d) {}
-    void reset() { integral = prev_error = d_filtered = 0.0f; }
-    float update(float error, float dt, float output, float lo, float hi) {
-        // dead-band
-        if (std::fabs(error) >= DEAD_BAND) {
-            float d_raw = (error - prev_error) / dt;
-            float alpha = dt / (DERIV_TAU + dt);
-            d_filtered += alpha * (d_raw - d_filtered);
+    float integral, prev_error, d_filtered;
+
+    DualPID()
+     : Kp(g_Kp_ang), Ki(g_Ki_ang), Kd(g_Kd_ang),
+       integral(0), prev_error(0), d_filtered(0)
+    {}
+
+    void reset() {
+        Kp = g_Kp_ang; Ki = g_Ki_ang; Kd = g_Kd_ang;
+        integral = prev_error = d_filtered = 0;
+    }
+
+    float update(float error, float /*error_dot*/, float dt,
+                 float output, float min_u, float max_u)
+    {
+        if (std::fabs(error) < DEAD_BAND) {
+            // no change
         }
-        // anti-windup
-        if (output > lo && output < hi) integral += error * dt;
-        // PID + bias
+        float d_raw = dt > 0 ? (error - prev_error) / dt : 0;
+        float alpha = dt / (DERIV_TAU + dt);
+        d_filtered += alpha * (d_raw - d_filtered);
+
+        if (output > min_u && output < max_u)
+            integral += error * dt;
+
         float u = Kp * error + Ki * integral + Kd * d_filtered
-                + OVERSHOOT_BIAS * std::copysign(1.0f, error);
-        // clamp
-        float u_sat = std::fmax(lo, std::fmin(hi, u));
+                + g_OVERSHOOT_BIAS * (error > 0 ? 1.0f : -1.0f);
+
+        float u_sat = std::fmax(min_u, std::fmin(max_u, u));
         prev_error = error;
         return u_sat;
     }
 };
 
-// RoverController equivalent
-struct Controller {
-    DualPID angle_pid{Kp_ang, Ki_ang, Kd_ang};
-    DualPID vel_pid{Kp_vel, Ki_vel, Kd_vel};
+// —————————————————————————————————————————————————————————
+// RoverController: wraps DualPID + drift/manual drive logic
+// —————————————————————————————————————————————————————————
+struct RoverController {
+    DualPID pid;
+    float drive_current;
+    float u_smoothed;
+    bool manual_active;
+    std::deque<float> drift_buffer;
 
-    float drive_current = 0.0f;
-    float u_smoothed    = 0.0f;
-    bool  manual_active = false;
-    std::deque<float> drift_buf;
-    size_t max_len = 0;
+    RoverController()
+     : drive_current(0), u_smoothed(0), manual_active(false)
+    {}
+
+    void reset() {
+        pid.reset();
+        drive_current  = 0;
+        u_smoothed     = 0;
+        manual_active  = false;
+        drift_buffer.clear();
+    }
+
+    void on_fwd_press()   { manual_active = true;  drive_current += g_DRIVE_GAIN; }
+    void on_fwd_release() { manual_active = false; }
+    void on_bwd_press()   { manual_active = true;  drive_current -= g_DRIVE_GAIN; }
+    void on_bwd_release() { manual_active = false; }
+
+    // Now uses accel_x for drift estimation instead of slide velocity
+    float step(float theta, float theta_dot, float accel_x, float dt) {
+        // drift buffer with acceleration
+        drift_buffer.push_back(accel_x);
+        size_t m = size_t(g_DRIFT_WINDOW / dt);
+        if (drift_buffer.size() > m) drift_buffer.pop_front();
+
+        float ax_avg = 0;
+        for (auto &a : drift_buffer) ax_avg += a;
+        ax_avg /= drift_buffer.size();
+
+        if (!manual_active)
+            drive_current = -ax_avg * g_DRIFT_GAIN;
+
+        // manual‑drive decay
+        if (drive_current != 0) {
+            float dec = g_OVERSHOOT_RATE * dt;
+            if (std::fabs(drive_current) > dec)
+                drive_current -= (drive_current > 0 ? 1 : -1) * dec;
+            else
+                drive_current = -(drive_current > 0 ? 1 : -1) * (dec - std::fabs(drive_current));
+        }
+
+        // PID update (uses angle gains)
+        float u_pid = pid.update(theta, theta_dot, dt, u_smoothed, -3e5f, 3e5f);
+        float target = u_pid + drive_current;
+        u_smoothed += (dt / g_SMOOTH_TAU) * (target - u_smoothed);
+        return u_smoothed;
+    }
 };
 
-// API
-void* make_controller(float dt) {
-    Controller* c = new Controller();
-    c->max_len = static_cast<size_t>(DRIFT_WINDOW / dt);
-    return c;
+static RoverController* ctrl = nullptr;
+
+// —————————————————————————————————————————————————————————
+// C API
+// —————————————————————————————————————————————————————————
+void* make_controller() {
+    delete ctrl;
+    ctrl = new RoverController();
+    return ctrl;
 }
 
 void free_controller(void* ptr) {
-    delete static_cast<Controller*>(ptr);
+    delete static_cast<RoverController*>(ptr);
+    ctrl = nullptr;
 }
 
-void on_fwd_press(void* ptr) {
-    Controller* c = static_cast<Controller*>(ptr);
-    c->manual_active = true;
-    c->drive_current += DRIVE_GAIN;
-}
-void on_fwd_release(void* ptr) {
-    static_cast<Controller*>(ptr)->manual_active = false;
-}
-void on_bwd_press(void* ptr) {
-    Controller* c = static_cast<Controller*>(ptr);
-    c->manual_active = true;
-    c->drive_current -= DRIVE_GAIN;
-}
-void on_bwd_release(void* ptr) {
-    static_cast<Controller*>(ptr)->manual_active = false;
+/// update_controller:
+///   accel:     float[3]
+///   gyro:      float[3]
+///   slide_vel: float[1] (unused, now accel_x used)
+///   dt:        float[1]
+float update_controller(void* ptr,
+                        float* accel,
+                        float* gyro,
+                        float* /*slide_vel*/, 
+                        float* dt_ptr)
+{
+    float ax = accel[0], az = accel[2];
+    float gy = gyro[1];
+    float dt = dt_ptr[0];
+
+    float theta     = std::atan2(-ax, az);
+    float theta_dot = gy;
+
+    return static_cast<RoverController*>(ptr)
+          ->step(theta, theta_dot, ax, dt);
 }
 
-float update_controller(
-    void* ptr,
-    float theta,
-    float theta_dot,
-    float slide_vel,
-    float dt
-) {
-    Controller* c = static_cast<Controller*>(ptr);
-    // drift buffer
-    c->drift_buf.push_back(slide_vel);
-    if (c->drift_buf.size() > c->max_len) c->drift_buf.pop_front();
-    float v_avg = 0;
-    for (float v : c->drift_buf) v_avg += v;
-    v_avg /= c->drift_buf.size();
-    // drift correction
-    if (!c->manual_active) c->drive_current = -v_avg * DRIFT_GAIN;
-    // manual decay
-    if (c->drive_current != 0.0f) {
-        float dec = OVERSHOOT_RATE * dt;
-        if (std::fabs(c->drive_current) > dec)
-            c->drive_current -= std::copysign(dec, c->drive_current);
-        else
-            c->drive_current = -std::copysign(dec - std::fabs(c->drive_current), c->drive_current);
-    }
-    // PID angle
-    float err_ang = -theta;
-    float u_ang = c->angle_pid.update(err_ang, dt, c->u_smoothed, -INFINITY, INFINITY);
-    // PID vel
-    float err_vel = u_ang - theta_dot;
-    float u_vel = c->vel_pid.update(err_vel, dt, c->u_smoothed, -INFINITY, INFINITY);
-    // target
-    float u_target = u_vel + c->drive_current;
-    // smoothing
-    c->u_smoothed += (dt / SMOOTH_TAU) * (u_target - c->u_smoothed);
-    return c->u_smoothed;
-}
+// Manual‑drive
+void on_fwd_press(void* ptr)   { ctrl->on_fwd_press(); }
+void on_fwd_release(void* ptr) { ctrl->on_fwd_release(); }
+void on_bwd_press(void* ptr)   { ctrl->on_bwd_press(); }
+void on_bwd_release(void* ptr) { ctrl->on_bwd_release(); }
+
+// Setters
+void set_Kp_ang(float v)        { g_Kp_ang = v; }
+void set_Ki_ang(float v)        { g_Ki_ang = v; }
+void set_Kd_ang(float v)        { g_Kd_ang = v; }
+
+void set_Kp_vel(float v)        { g_Kp_vel = v; }
+void set_Ki_vel(float v)        { g_Ki_vel = v; }
+void set_Kd_vel(float v)        { g_Kd_vel = v; }
+
+void set_drive_gain(float v)    { g_DRIVE_GAIN = v; }
+void set_drive_ramp(float v)    { g_DRIVE_RAMP = v; }
+void set_smooth_tau(float v)    { g_SMOOTH_TAU = v; }
+
+void set_overshoot_bias(float v){ g_OVERSHOOT_BIAS = v; }
+void set_overshoot_rate(float v){ g_OVERSHOOT_RATE = v; }
+
+void set_drift_gain(float v)    { g_DRIFT_GAIN = v; }
+void set_drift_window(float v)  { g_DRIFT_WINDOW = v; }
 
 } // extern "C"
 
