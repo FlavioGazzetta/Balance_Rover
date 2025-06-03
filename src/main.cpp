@@ -47,8 +47,9 @@ const float Kd_BOOST_FACTOR       = 100.0f;
 const float Kp_outer = 0.3f;
 
 /* ───────────────────── MANUAL-DRIVE CONSTANTS ────────────────── */
-const float TILT_MANUAL = 0.2f;  // rad  (≈ 11.5°)
-const float SPIN_SPEED  = 4.0f;  // rad/s wheel-against-wheel
+const float TILT_MANUAL = 1.0f; 
+const float TILT_ANGLE =  0.015f;
+const float SPIN_SPEED  = 3.0f;  // rad/s wheel-against-wheel
 
 /* ─────────────── wheel *auto-sync* controller gains ──────────── */
 const float SYNC_KP   = 5.0f;   // proportional on speed difference
@@ -70,6 +71,7 @@ volatile float  g_webDesired       = 0.0f;   // numeric set-point
 
 volatile bool   manualMode         = false;  // ↑ or ↓ held
 volatile float  manualTiltOffset   = 0.0f;   // ±TILT_MANUAL
+volatile float  movementoffset     = 0.0f;
 
 volatile bool   wheelLeftMode      = false;  // ← held
 volatile bool   wheelRightMode     = false;  // → held
@@ -80,41 +82,94 @@ volatile float  freezePositionPos  = 0.0f;   // latched pos
 volatile float  g_positionEstimate = 0.0f;   // shared with /cmd
 
 /* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
+/* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
+/* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
+/* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
 const char HOMEPAGE[] PROGMEM = R"====(
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  *{ -webkit-tap-highlight-color:transparent; }
-  .pad{display:flex;flex-direction:column;align-items:center;width:220px;margin:auto;}
-  .row{display:flex;justify-content:center;}
-  button{
-    width:64px;height:64px;font-size:36px;margin:6px;border-radius:12px;
-    background:#e0e0e0;color:#000;border:1px solid #999;
-    user-select:none;-webkit-user-select:none;touch-action:manipulation;
-    transition:background .05s,color .05s;
-  }
-  button:active,button.pressed{background:#3f51b5;color:#fff;}
-</style>
-<script>
-function send(cmd){ fetch('/cmd?act='+cmd); }
+<meta
+  name="viewport"
+  content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover"
+/>
+<title>Remote-Controller</title>
 
-/* bind(id, startCmd, stopCmd) */
+<!-- ——————  styles —————— -->
+<style>
+  :root{
+    --primary:#3f51b5;--primary-dark:#303f9f;--surface:#ffffffee;
+    --surface-hover:#f1f3f7;--surface-press:var(--primary);
+    --text-main:#2b2b2b;--text-muted:#666;--radius:14px;
+    --shadow:0 4px 12px rgba(0,0,0,.14);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,
+            "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            background:linear-gradient(135deg,#d7e1ec 0%,#f6f7f9 100%);}
+  body{display:flex;align-items:center;justify-content:center;padding:14px;}
+
+  .card{
+    background:var(--surface);padding:22px 26px;border-radius:var(--radius);
+    box-shadow:var(--shadow);max-width:320px;width:100%;
+    display:flex;flex-direction:column;gap:22px;
+  }
+  h1{font-size:1.5rem;font-weight:600;margin:0;text-align:center;
+     color:var(--primary-dark);}
+
+  /* ---------- control pad (perfect cross) ---------- */
+  .pad{
+    display:grid;grid-template-columns:repeat(3,1fr);
+    grid-template-rows:repeat(3,1fr);gap:14px;
+    justify-items:center;align-items:center;
+  }
+  #up   {grid-column:2;grid-row:1;}
+  #left {grid-column:1;grid-row:2;}
+  #right{grid-column:3;grid-row:2;}
+  #down {grid-column:2;grid-row:3;}
+
+  button{
+    width:80px;height:80px;border:none;font-size:38px;font-weight:600;
+    border-radius:50%;background:var(--surface-hover);color:var(--text-main);
+    cursor:pointer;touch-action:manipulation;
+    transition:background .08s,color .08s,transform .08s;
+    /* —— NEW: block text selection / callout —— */
+    user-select:none;-webkit-user-select:none;-moz-user-select:none;
+    -ms-user-select:none;-webkit-touch-callout:none;
+  }
+  button:active,
+  button.pressed{
+    background:var(--surface-press);color:#fff;transform:scale(0.96);
+  }
+
+  /* ---------- numeric set-point form ---------- */
+  form{display:flex;flex-direction:column;gap:12px;text-align:center;}
+  label{font-size:.88rem;color:var(--text-muted);}
+  input[type=number]{
+    padding:8px 10px;border:1px solid #ccd1d8;border-radius:var(--radius);
+    width:120px;margin:auto;font-size:1rem;text-align:center;
+  }
+  input[type=submit]{
+    padding:10px;border:none;border-radius:var(--radius);
+    background:var(--primary);color:#fff;font-size:1rem;font-weight:600;
+    cursor:pointer;transition:background .1s;
+  }
+  input[type=submit]:hover{background:var(--primary-dark);}
+</style>
+
+<!-- ——————  logic —————— -->
+<script>
+function send(cmd){fetch('/cmd?act='+cmd);}
 function bind(id,start,stop){
-  const el=document.getElementById(id); let rpt=null;
+  const el=document.getElementById(id);let rpt=null;
   const down=e=>{
-    e.preventDefault();
-    el.classList.add('pressed');
-    send(start);
-    rpt=setInterval(()=>send(start),200);
+    e.preventDefault();el.classList.add('pressed');
+    send(start);rpt=setInterval(()=>send(start),200);
   };
   const up=e=>{
-    e.preventDefault();
-    if(rpt){clearInterval(rpt); rpt=null;}
-    el.classList.remove('pressed');
-    send(stop);
+    e.preventDefault();el.classList.remove('pressed');
+    clearInterval(rpt);rpt=null;send(stop);
   };
   el.addEventListener('pointerdown',down,{passive:false});
   ['pointerup','pointercancel','pointerleave'].forEach(ev=>
@@ -128,22 +183,28 @@ window.addEventListener('load',()=>{
 });
 </script>
 </head>
+
 <body>
-  <h2 style="text-align:center;">ESP32&nbsp;Balance-Bot</h2>
-  <div class="pad">
-    <div class="row"><button id="up">&uarr;</button></div>
-    <div class="row">
-      <button id="left">&larr;</button>
-      <button id="right">&rarr;</button>
+  <div class="card">
+    <h1>Remote-Controller</h1>
+
+    <!-- control pad ----------------------------------------------------------- -->
+    <div class="pad">
+      <button id="up">↑</button>
+      <button id="left">←</button>
+      <button id="right">→</button>
+      <button id="down">↓</button>
     </div>
-    <div class="row"><button id="down">&darr;</button></div>
+
+    <!-- numeric set-point ----------------------------------------------------- -->
+    <form action="/set" method="GET">
+      <label>
+        Desired&nbsp;position
+        <input type="number" step="0.01" name="val" value="0.00">
+      </label>
+      <input type="submit" value="Submit">
+    </form>
   </div>
-  <hr>
-  <form action="/set" method="GET" style="text-align:center;">
-    Desired&nbsp;position:
-    <input type="number" step="0.01" name="val" value="0.00">
-    <input type="submit" value="Submit">
-  </form>
 </body>
 </html>
 )====";
@@ -168,14 +229,14 @@ void handleCmd(){
   String a = server.arg("act");
 
   /* ---- START commands ---- */
-  if      (a=="up_start")    { manualMode=true;  manualTiltOffset= TILT_MANUAL;  freezePosition=false; }
-  else if (a=="down_start")  { manualMode=true;  manualTiltOffset=-TILT_MANUAL;  freezePosition=false; }
+  if      (a=="up_start")    { manualMode=true;  movementoffset= TILT_MANUAL; manualTiltOffset = TILT_ANGLE;  freezePosition=false; }
+  else if (a=="down_start")  { manualMode=true;  movementoffset=-TILT_MANUAL; manualTiltOffset = -TILT_ANGLE;  freezePosition=false; }
   else if (a=="left_start")  { wheelLeftMode=true;  wheelRightMode=false; freezePosition=false; }
   else if (a=="right_start") { wheelRightMode=true; wheelLeftMode=false;  freezePosition=false; }
 
   /* ---- STOP commands ---- */
   else if (a=="up_stop" || a=="down_stop"){
-    manualTiltOffset=0; manualMode=false;
+    movementoffset=0; manualTiltOffset = 0; manualMode=false;
     freezePosition=true;      // hold wherever we are
     freezePositionPos=g_positionEstimate;
   }
@@ -267,9 +328,23 @@ void loop(){
   /* --------------- Diagnostics (500 ms) --------------- */
   static unsigned long printT = 0;
 
+  float ref = 0;
+
   /* ~~~~~~~~~~~~~ INNER CONTROL LOOP ~~~~~~~~~~~~~ */
   if(now - innerT >= INNER_INTERVAL){
     innerT += INNER_INTERVAL;
+
+    if(manualMode){
+
+      ref = REFERENCE_ANGLE + manualTiltOffset;
+
+    }
+    else{
+
+      ref = REFERENCE_ANGLE;
+
+    }
+    
 
     /* wheel speed → position estimate (rad) */
     float sp1_meas = step1.getSpeedRad();
@@ -280,7 +355,7 @@ void loop(){
     /* IMU */
     sensors_event_t a,g,tmp;
     mpu.getEvent(&a,&g,&tmp);
-    tilt_acc_z = a.acceleration.z / 9.81f;
+    tilt_acc_z = atan2(a.acceleration.z, a.acceleration.x);
     gyro_y     = g.gyro.y;
 
     /* complementary filter */
@@ -289,16 +364,16 @@ void loop(){
     theta = (1.0f - c)*tilt_acc_z + c*(theta + gyro_y*dt);
 
     /* error */
-    if(fabsf(REFERENCE_ANGLE - theta) < 0.01f)
-         err_inner = (REFERENCE_ANGLE + tiltSP) - theta;
-    else err_inner = (REFERENCE_ANGLE) - theta;
+    if(fabsf(ref - theta) < 0.01f)
+         err_inner = (ref + tiltSP) - theta;
+    else err_inner = (ref) - theta;
 
     integral += err_inner * dt;
 
     float deriv = -gyro_y;
     float Kd_eff = Kd_inner;
     if((fabsf(err_inner) < ERROR_SMALL_THRESHOLD) &&
-       (fabsf(gyro_y)    > GYRO_SPIKE_THRESHOLD)){
+       (fabsf(gyro_y)    > GYRO_SPIKE_THRESHOLD) && !manualMode){
       Kd_eff *= Kd_BOOST_FACTOR;
     }
 
@@ -313,6 +388,12 @@ void loop(){
       step1.setTargetSpeedRad(uout - SPIN_SPEED);   // left wheel rev
       step2.setTargetSpeedRad(uout + SPIN_SPEED);   // right wheel fwd
     }
+    else if(manualMode){
+
+      step1.setTargetSpeedRad(uout);
+      step2.setTargetSpeedRad(uout);
+
+    }
     else{                         // straight drive – apply auto-sync
       /* PI controller on measured speed difference */
       step1.setTargetSpeedRad(uout);  // left
@@ -326,7 +407,7 @@ void loop(){
     outerT += OUTER_INTERVAL;
 
     if(manualMode){
-      tiltSP = manualTiltOffset;            // ↑/↓ override
+      tiltSP = 0;            // ↑/↓ override
     }else{
       desiredPos = freezePosition ? freezePositionPos : g_webDesired;
       float posErr = desiredPos - posEst;
@@ -338,13 +419,15 @@ void loop(){
   if(now - printT >= PRINT_INTERVAL){
     printT += PRINT_INTERVAL;
     Serial.printf(
-      "θ_ref %.3f | tiltSP %.3f | θ %.3f | pos %.3f | sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f\n",
+      "θ_ref %.3f | tiltSP %.3f | θ %.3f | pos %.3f | sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f | manual:%d | toffset: %.3f \n",
       REFERENCE_ANGLE, tiltSP, theta, posEst,
       step1.getSpeedRad(), step2.getSpeedRad(),
-      desiredPos, wheelLeftMode, wheelRightMode, step1.getSpeedRad() - step2.getSpeedRad()
+      desiredPos, wheelLeftMode, wheelRightMode, step1.getSpeedRad() - step2.getSpeedRad(), manualMode,manualTiltOffset
     );
   }
 }
 
 
-/* idea: make the if a == left_stop and the if a == right_stop functions set the target speed to 0 to make the wheels stop at the end of the rotation */
+/* idea: make the if a == left_stop and the if a == right_stop functions set the target speed to 0 to make the wheels stop at the end of the rotation 
+
+Also make it such that the average speed is not implemented into outer loop also when rotating */
