@@ -219,63 +219,88 @@ const char HOMEPAGE[] PROGMEM = R"====(
 
 <!-- ——————  logic for binding buttons + fetching telemetry —————— -->
 <script>
-function send(cmd) {
-  fetch('/cmd?act=' + cmd);
-}
-function bind(id, start, stop) {
-  const el = document.getElementById(id);
-  let rpt = null;
-  const down = e => {
-    e.preventDefault();
-    el.classList.add('pressed');
-    send(start);
-    rpt = setInterval(() => send(start), 200);
-  };
-  const up = e => {
-    e.preventDefault();
-    el.classList.remove('pressed');
-    clearInterval(rpt);
-    rpt = null;
-    send(stop);
-  };
-  el.addEventListener('pointerdown', down, { passive: false });
-  ['pointerup','pointercancel','pointerleave'].forEach(ev =>
-    el.addEventListener(ev, up, { passive: false })
-  );
-}
+  function send(cmd) {
+    fetch("/cmd?act=" + cmd);
+  }
 
-window.addEventListener('load', () => {
-  bind('up',    'up_start',   'up_stop');
-  bind('down',  'down_start', 'down_stop');
-  bind('left',  'left_start', 'left_stop');
-  bind('right', 'right_start','right_stop');
+  function bind(id, start, stop) {
+    const el = document.getElementById(id);
+    let rpt = null;
+    const down = (e) => {
+      e.preventDefault();
+      el.classList.add("pressed");
+      send(start);
+      rpt = setInterval(() => send(start), 200);
+    };
+    const up = (e) => {
+      e.preventDefault();
+      el.classList.remove("pressed");
+      clearInterval(rpt);
+      rpt = null;
+      send(stop);
+    };
+    el.addEventListener("pointerdown", down, { passive: false });
+    ["pointerup", "pointercancel", "pointerleave"].forEach((ev) =>
+      el.addEventListener(ev, up, { passive: false })
+    );
+  }
 
-  // Every 500 ms, fetch /status and update the telemetry table
-  setInterval(async () => {
-    try {
-      const resp = await fetch('/status');
-      if (!resp.ok) return;
-      const data = await resp.json();
-      // Update each table cell by ID
-      document.getElementById('tiltSP').innerText   = data.tiltSP.toFixed(3);
-      document.getElementById('theta').innerText    = data.theta.toFixed(3);
-      document.getElementById('posEst').innerText   = data.posEst.toFixed(3);
-      document.getElementById('w1pos').innerText    = data.w1pos.toFixed(3);
-      document.getElementById('w2pos').innerText    = data.w2pos.toFixed(3);
-      document.getElementById('sp1').innerText      = data.sp1.toFixed(3);
-      document.getElementById('sp2').innerText      = data.sp2.toFixed(3);
-      document.getElementById('desPos').innerText   = data.desPos.toFixed(3);
-      document.getElementById('L').innerText        = data.L;
-      document.getElementById('R').innerText        = data.R;
-      document.getElementById('diff').innerText     = data.diff.toFixed(3);
-      document.getElementById('manual').innerText   = data.manual;
-      document.getElementById('fallen').innerText   = data.fallen;
-    } catch (e) {
-      // ignore transient errors
-    }
-  }, 500);
-});
+  window.addEventListener("load", () => {
+    // 1) Bind the arrow‐buttons
+    bind("up", "up_start", "up_stop");
+    bind("down", "down_start", "down_stop");
+    bind("left", "left_start", "left_stop");
+    bind("right", "right_start", "right_stop");
+
+    // 2) Every 500 ms, fetch /status and update the telemetry table
+    setInterval(async () => {
+      try {
+        const resp = await fetch("/status");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        document.getElementById("tiltSP").innerText   = data.tiltSP.toFixed(3);
+        document.getElementById("theta").innerText    = data.theta.toFixed(3);
+        document.getElementById("posEst").innerText   = data.posEst.toFixed(3);
+        document.getElementById("w1pos").innerText    = data.w1pos.toFixed(3);
+        document.getElementById("w2pos").innerText    = data.w2pos.toFixed(3);
+        document.getElementById("sp1").innerText      = data.sp1.toFixed(3);
+        document.getElementById("sp2").innerText      = data.sp2.toFixed(3);
+        document.getElementById("desPos").innerText   = data.desPos.toFixed(3);
+        document.getElementById("L").innerText        = data.L;
+        document.getElementById("R").innerText        = data.R;
+        document.getElementById("diff").innerText     = data.diff.toFixed(3);
+        document.getElementById("manual").innerText   = data.manual;
+        document.getElementById("fallen").innerText   = data.fallen;
+      } catch (e) {
+        // ignore transient errors
+      }
+    }, 500);
+
+    // 3) Set up the “Submit” handler (outside of bind())
+    const posForm  = document.getElementById("posForm");
+    const posInput = document.getElementById("posInput");
+    const posAck   = document.getElementById("posAck");
+
+    posForm.addEventListener("submit", async (e) => {
+      e.preventDefault();               // prevent page reload
+      const v = posInput.value;         // read the new set‐point
+      try {
+        const resp = await fetch("/set?val=" + encodeURIComponent(v));
+        if (resp.ok) {
+          posAck.innerText = "✔︎";      // success
+          setTimeout(() => { posAck.innerText = ""; }, 1000);
+        } else {
+          posAck.innerText = "✘";      // error
+          setTimeout(() => { posAck.innerText = ""; }, 1500);
+        }
+      } catch (err) {
+        posAck.innerText = "✘";        // network failure
+        setTimeout(() => { posAck.innerText = ""; }, 1500);
+      }
+    });
+  });
 </script>
+
 </head>
 
 <body>
@@ -291,12 +316,13 @@ window.addEventListener('load', () => {
     </div>
 
     <!-- ───── numeric set-point ───── -->
-    <form action="/set" method="GET">
+    <form id="posForm">
       <label>
         Desired position:
-        <input type="number" step="0.01" name="val" value="0.00">
+        <input id="posInput" type="number" step="0.01" name="val" value="0.00">
       </label>
       <input type="submit" value="Submit">
+      <span id="posAck" style="margin-left:8px; color:green; font-size:0.9em;"></span>
     </form>
 
     <!-- ───── telemetry table ───── -->
@@ -624,7 +650,7 @@ void loop() {
       float posErr  = desired - posEst;
       if(abs(posErr) > POSERRLIMIT){
 
-        tiltSP = - constrain(Kp_outer * posErr, -0.015f, 0.015f);
+        tiltSP = - constrain(Kp_outer * posErr, -0.025f, 0.025f);
 
       }
       else{
