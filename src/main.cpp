@@ -37,7 +37,7 @@ const float Kp_inner        = 1000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.035f;    // rad
+const float REFERENCE_ANGLE = -0.055f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -45,7 +45,7 @@ const float GYRO_SPIKE_THRESHOLD  = 0.2f;     // rad/s
 const float Kd_BOOST_FACTOR       = 100.0f;
 
 // outer (position) loop gain
-const float ANGLE_CONSTRAINT = 0.02;
+const float ANGLE_CONSTRAINT = 0.025;
 
 /* ───────────────────── MANUAL‐DRIVE CONSTANTS ────────────────── */
 const float TILT_MANUAL = 1.0f;
@@ -700,26 +700,38 @@ void loop() {
       float desired = g_webDesired;
       float posErr  = desired - posEst;
       float absErr  = fabsf(posErr);
+      float mult = 1;
+      float Kp = 0;
       if(abs(posErr) > POSERRLIMIT){
 
-        tiltSP = -constrain(0.04/abs(avgSpeed), -ANGLE_CONSTRAINT, ANGLE_CONSTRAINT);
+        if(posErr < 0){
 
-        if (posErr < 0){
+          Kp = (-0.05)/(3.8);
 
-          tiltSP = - tiltSP;
+        }else{
+
+          Kp = 0.05;
 
         }
+
+        tiltSP = -constrain((Kp/abs(avgSpeed)), -ANGLE_CONSTRAINT/3.8, ANGLE_CONSTRAINT);
+
 
       }
       else if (absErr > POSERRSLOWLIMIT) {
 
-        tiltSP = -constrain(0.02/abs(avgSpeed), -ANGLE_CONSTRAINT, ANGLE_CONSTRAINT);
-
         if (posErr < 0){
 
-          tiltSP = - tiltSP;
+          mult = -1;
+
+        }else{
+
+          mult = 1;
 
         }
+
+        tiltSP = -constrain(mult*(0.03/abs(avgSpeed)), -ANGLE_CONSTRAINT/3.3, ANGLE_CONSTRAINT);
+
         }
       else{
 
