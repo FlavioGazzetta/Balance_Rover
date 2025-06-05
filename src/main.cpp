@@ -700,10 +700,9 @@ void loop() {
       float desired = g_webDesired;
       float posErr  = desired - posEst;
       float absErr  = fabsf(posErr);
-      bool direct = !((avgSpeed * posErr) > 0);
       if(abs(posErr) > POSERRLIMIT){
 
-        tiltSP = -constrain(0.06/abs(avgSpeed), -ANGLE_CONSTRAINT, ANGLE_CONSTRAINT);
+        tiltSP = -constrain(0.04/abs(avgSpeed), -ANGLE_CONSTRAINT, ANGLE_CONSTRAINT);
 
         if (posErr < 0){
 
@@ -712,15 +711,15 @@ void loop() {
         }
 
       }
-      else if (absErr > POSERRSLOWLIMIT && direct) {
-          float diff       = POSERRLIMIT - POSERRSLOWLIMIT;        // = 6.0
-          float clippedErr = absErr - POSERRSLOWLIMIT;             // how far into “slow” region
-          // fraction ∈ [0,1]:  0 when absErr = 2,  1 when absErr = 8
-          float frac = clippedErr / diff;  
-          // desired magnitude = frac * ANGLE_CONSTRAINT
-          float mag = frac * ANGLE_CONSTRAINT;
-          // apply sign(posErr) exactly once, with the leading negative
-          tiltSP = - mag * (posErr > 0 ? +1.0f : -1.0f);
+      else if (absErr > POSERRSLOWLIMIT) {
+
+        tiltSP = -constrain(0.02/abs(avgSpeed), -ANGLE_CONSTRAINT, ANGLE_CONSTRAINT);
+
+        if (posErr < 0){
+
+          tiltSP = - tiltSP;
+
+        }
         }
       else{
 
