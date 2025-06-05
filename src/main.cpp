@@ -95,6 +95,11 @@ volatile float  freezePositionPos  = 0.0f;   // latched position (rad)
 
 volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
 
+/* ─────────────────────── TELEMETRY STORAGE ───────────────────── */
+// Holds the latest “diagnostic” line so we can serve it via HTTP
+String statusString = "";
+
+
 /* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
 const char HOMEPAGE[] PROGMEM = R"====(
 <!DOCTYPE html>
@@ -190,6 +195,18 @@ window.addEventListener('load',()=>{
   bind('down' ,'down_start' ,'down_stop');
   bind('left' ,'left_start' ,'left_stop');
   bind('right','right_start','right_stop');
+
+  // Every 500 ms, fetch /status and dump it into the <pre id="telemetry">
+  setInterval(async () => {
+    try {
+      const resp = await fetch('/status');
+      if (!resp.ok) return;
+      const txt = await resp.text();
+      document.getElementById('telemetry').innerText = txt;
+    } catch (e) {
+      // ignore errors
+    }
+  }, 500);
 });
 </script>
 </head>
@@ -214,77 +231,84 @@ window.addEventListener('load',()=>{
       </label>
       <input type="submit" value="Submit">
     </form>
+
+    <!-- telemetry output (populated by JavaScript) ---------------------------- -->
+    <pre id="telemetry" style="background:#f1f1f1;border-radius:8px;padding:10px;font-family:monospace;height:200px;overflow-y:auto;">
+Waiting for telemetry…
+    </pre>
   </div>
 </body>
 </html>
 )====";
 
 /* ─────────────────── ROUTE HANDLERS ─────────────────────────── */
-void handleRoot() { server.send_P(200,"text/html",HOMEPAGE); }
+void handleRoot() {
+  server.send_P(200, "text/html", HOMEPAGE);
+}
 
-void handleSet(){
-  if(server.hasArg("val")){
+void handleSet() {
+  if (server.hasArg("val")) {
     g_webDesired = server.arg("val").toFloat();
-    String resp  = "Received: " + server.arg("val") + "<br><a href='/'>Back</a>";
-    server.send(200,"text/html",resp);
+    String resp = "Received: " + server.arg("val") + "<br><a href='/'>Back</a>";
+    server.send(200, "text/html", resp);
   } else {
-    server.send(400,"text/plain","Bad Request");
+    server.send(400, "text/plain", "Bad Request");
   }
 }
 
-void handleCmd(){
-  if(!server.hasArg("act")){
-    server.send(400,"text/plain","Bad Request"); 
+void handleCmd() {
+  if (!server.hasArg("act")) {
+    server.send(400, "text/plain", "Bad Request");
     return;
   }
   if (fallen) {
     // If already fallen, ignore any new drive commands
-    server.send(200,"text/plain","Ignored – robot has fallen");
+    server.send(200, "text/plain", "Ignored – robot has fallen");
     return;
   }
 
   String a = server.arg("act");
 
   /* ---- START commands ---- */
-  if      (a=="up_start")    { 
+  if      (a == "up_start")    { 
     manualMode = true;  
-    movementoffset =  TILT_MANUAL;  
-    manualTiltOffset =  TILT_ANGLE;   
+    movementoffset = TILT_MANUAL;  
+    manualTiltOffset = TILT_ANGLE;   
     freezePosition = false;  
   }
-  else if (a=="down_start")  { 
+  else if (a == "down_start")  { 
     manualMode = true;  
     movementoffset = -TILT_MANUAL;  
     manualTiltOffset = -TILT_ANGLE;  
     freezePosition = false;  
   }
-  else if (a=="left_start")  { 
+  else if (a == "left_start")  { 
     wheelLeftMode = true;  
     wheelRightMode = false; 
     freezePosition = false; 
   }
-  else if (a=="right_start") { 
+  else if (a == "right_start") { 
     wheelRightMode = true; 
     wheelLeftMode = false;  
     freezePosition = false; 
   }
 
   /* ---- STOP commands ---- */
-  else if (a=="up_stop" || a=="down_stop"){
+  else if (a == "up_stop" || a == "down_stop") {
     movementoffset = 0; 
     manualTiltOffset = 0; 
     manualMode = false;
     freezePosition = true;         // latch current position
     // We’ll set freezePositionPos in loop() on next outer‐tick
   }
-  else if (a=="left_stop"){
+  else if (a == "left_stop") {
     wheelLeftMode = false;
     freezePosition = true;
     step1.setTargetSpeedRad(0);  
     step2.setTargetSpeedRad(0);  
     delay(40);
   }
-  else if (a=="right_stop"){
+  else if (a == "right_stop") {
     wheelRightMode = false;
     freezePosition = true;
     step1.setTargetSpeedRad(0);  
@@ -292,11 +316,16 @@ void handleCmd(){
     delay(40);
   }
   else { 
-    server.send(400,"text/plain","Unknown command"); 
+    server.send(400, "text/plain", "Unknown command"); 
     return; 
   }
 
-  server.send(200,"text/plain","OK");
+  server.send(200, "text/plain", "OK");
+}
+
+// New handler: returns the latest telemetry line
+void handleStatus() {
+  server.send(200, "text/plain", statusString);
 }
 
 /* ───────────────────── STEPPER TIMER ISR ─────────────────────── */
@@ -310,20 +339,21 @@ bool IRAM_ATTR TimerHandler(void*) {
 }
 
 /* ────────────────────────── SETUP ────────────────────────────── */
-void setup(){
+void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("=== ESP32 Balance-Bot v3.2 (With fall detection & recovery) ===");
+  Serial.println("=== ESP32 Balance-Bot v3.2 (With Web Telemetry) ===");
 
   /* Wi-Fi AP */
-  WiFi.softAP("ESP32_BalanceBot","12345678");
+  WiFi.softAP("ESP32_BalanceBot", "12345678");
   Serial.print("Connect to http://");
   Serial.println(WiFi.softAPIP());
 
   /* Web routes */
-  server.on("/",    handleRoot);
-  server.on("/set", handleSet);
-  server.on("/cmd", handleCmd);
+  server.on("/",      handleRoot);
+  server.on("/set",   handleSet);
+  server.on("/cmd",   handleCmd);
+  server.on("/status", handleStatus);
   server.begin();
 
   /* Hardware init */
@@ -349,7 +379,7 @@ void setup(){
 }
 
 /* ────────────────────────── MAIN LOOP ───────────────────────── */
-void loop(){
+void loop() {
   unsigned long now = millis();
   server.handleClient();  // handle web requests
 
@@ -405,16 +435,16 @@ void loop(){
       // Tilt is back under threshold → clear fallen flag
       fallen = false;
       Serial.println("Rover recovered, resuming operation");
-      // (Optionally, you could zero‐out integral here if you want a fresh start:
+      // (Optionally zero‐out integral if you want a “fresh‐start”)
       // integral = 0.0f;
-      // )
     }
 
     // 4) Inner‐loop error & integral/derivative
-    
-    err_inner = (ref + tiltSP) - theta;
-    
-    
+    if (fabsf(ref - theta) < 0.01f) {
+      err_inner = (ref + tiltSP) - theta;
+    } else {
+      err_inner = ref - theta;
+    }
 
     integral += err_inner * dt;
     float deriv = -gyro_y;
@@ -494,8 +524,8 @@ void loop(){
     }
     else {
       float desired = freezePosition ? freezePositionPos : g_webDesired;
-      float posErr  = (desired - posEst)*0.1;
-      tiltSP = - constrain(Kp_outer * posErr, -0.018f, 0.018f);
+      float posErr  = desired - posEst;
+      tiltSP = constrain(Kp_outer * posErr, -0.187f, 0.013f);
     }
   }
 
@@ -503,23 +533,44 @@ void loop(){
   /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT ~~~~~~~~~~~~~ */
   if (now - printT >= PRINT_INTERVAL) {
     printT += PRINT_INTERVAL;
+
+    // Gather all the values to print/store
     float w1pos = step1.getPositionRad();
     float w2pos = step2.getPositionRad();
-    Serial.printf(
-      "tiltSP %.3f | θ %.3f | posEst %.3f | w1pos %.3f | w2pos %.3f | sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f | manual:%d | fallen:%d\n",
+    float centerPos = 0.5f * (w1pos + w2pos);
+    float sp1 = step1.getSpeedRad();
+    float sp2 = step2.getSpeedRad();
+    float desiredOut = (freezePosition ? freezePositionPos : g_webDesired);
+    int   Lm = wheelLeftMode ? 1 : 0;
+    int   Rm = wheelRightMode ? 1 : 0;
+    float diffSp = sp1 - sp2;
+    int   mMode = manualMode ? 1 : 0;
+    int   fFlag = fallen ? 1 : 0;
+
+    // Format into a buffer
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+      "tiltSP %.3f | θ %.3f | posEst %.3f | w1pos %.3f | w2pos %.3f | "
+      "sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f | "
+      "manual:%d | fallen:%d",
       tiltSP,
       theta,
-      0.5f * (w1pos + w2pos),
+      centerPos,
       w1pos,
       w2pos,
-      step1.getSpeedRad(),
-      step2.getSpeedRad(),
-      (freezePosition ? freezePositionPos : g_webDesired),
-      wheelLeftMode,
-      wheelRightMode,
-      step1.getSpeedRad() - step2.getSpeedRad(),
-      manualMode,
-      fallen ? 1 : 0
+      sp1,
+      sp2,
+      desiredOut,
+      Lm,
+      Rm,
+      diffSp,
+      mMode,
+      fFlag
     );
+
+    // Print to Serial
+    Serial.println(buf);
+    // Also save it into statusString so /status can return it
+    statusString = String(buf);
   }
 }
