@@ -45,32 +45,28 @@ const float GYRO_SPIKE_THRESHOLD  = 0.2f;     // rad/s
 const float Kd_BOOST_FACTOR       = 100.0f;
 
 // outer (position) loop gain
-const float Kp_outer = 0.1f;
+const float ANGLE_CONSTRAINT = 0.02;
 
 /* ───────────────────── MANUAL‐DRIVE CONSTANTS ────────────────── */
 const float TILT_MANUAL = 1.0f;
 const float TILT_ANGLE  = 0.015f;
 const float SPIN_SPEED  = 3.0f;  // rad/s wheel‐against‐wheel
 
-/* ─────────────── wheel *auto‐sync* controller gains ──────────── */
-const float SYNC_KP       = 5.0f;    // proportional on speed difference
-const float SYNC_KI       = 6.0f;    // integral (small – accumulates only mrad/s·s)
-const float SYNC_MAX      = 10.0f;   // correction saturates at ±10 rad/s
-const float SYNC_DEADBAND = 0.05f;   // ignore speed diffs < 0.05 rad/s
 
 /* ─────────────────────────────────────────────────────────────────
    ───  “manual‐mode speed limiter” constants (unchanged)     𐄂
    ───────────────────────────────────────────────────────────────── */
 const float MAX_AVG_SPEED_RAD   = 10.0f;  // rad/s
-const float SPEED_REDUCTION_RAD =  1.0f;  // rad/s
 /* ─────────────────────────────────────────────────────────────────
    ───────────────────────────────────────────────────────────────── */
 
 /* ─────────────────────────── FALL‐DETECTION ───────────────────── */
 const float FALL_THRESHOLD = 0.5f;  // radians (~28.6°). Adjust as needed
 volatile bool fallen = false;       // set true once robot “falls”
+volatile float avgSpeed = 0;
 
-const float POSERRLIMIT = 5;
+const float POSERRLIMIT = 10;
+const float POSERRSLOWLIMIT = 5;
 
 
 /* ─────────────────────────── OBJECTS ─────────────────────────── */
@@ -271,6 +267,7 @@ const char HOMEPAGE[] PROGMEM = R"====(
         document.getElementById("diff").innerText     = data.diff.toFixed(3);
         document.getElementById("manual").innerText   = data.manual;
         document.getElementById("fallen").innerText   = data.fallen;
+        document.getElementById("avgSpeed").innerText   = data.avgSpeed.toFixed(3);
       } catch (e) {
         // ignore transient errors
       }
@@ -347,6 +344,7 @@ const char HOMEPAGE[] PROGMEM = R"====(
         <tr><td>diff</td>     <td class="value" id="diff">0.000</td></tr>
         <tr><td>manual</td>   <td class="value" id="manual">0</td></tr>
         <tr><td>fallen</td>   <td class="value" id="fallen">0</td></tr>
+        <tr><td>avgSpeed</td>   <td class="value" id="avgSpeed">0.000</td></tr>
       </tbody>
     </table>
   </div>
@@ -511,6 +509,11 @@ void loop() {
 
   float ref = 0;
 
+  float avgSpeed = 0;
+  float SumSpeed = 0;
+  float speedcount = 0;
+  bool speedtoohigh = false;
+
   /* ~~~~~~~~~~~~~ INNER CONTROL LOOP ~~~~~~~~~~~~~ */
   if (now - innerT >= INNER_INTERVAL) {
     innerT += INNER_INTERVAL;
@@ -574,7 +577,11 @@ void loop() {
          + Ki_inner * integral
          + Kd_eff * deriv;
 
-    float avgSpeed = 0.5f * (sp1_meas + sp2_meas);
+    speedcount ++;
+
+    SumSpeed += 0.5f * (sp1_meas + sp2_meas);
+
+    avgSpeed = SumSpeed/speedcount;
 
     /* ----- DRIVE WHEELS BASED ON MODE (unless fallen) ----- */
     if (fallen) {
@@ -593,11 +600,24 @@ void loop() {
     else if (manualMode) {
       // ─── “manual‐mode speed limiter” ─────────────────────────
       
-      if (avgSpeed > MAX_AVG_SPEED_RAD) {
-        uout -= SPEED_REDUCTION_RAD;
-        if (uout < MAX_AVG_SPEED_RAD) {
+      if (abs(avgSpeed) > MAX_AVG_SPEED_RAD) {
+
+        if(uout > 0){
+
           uout = MAX_AVG_SPEED_RAD;
+
         }
+        else if(uout < 0){
+
+          uout = - MAX_AVG_SPEED_RAD;
+          
+        }
+        else{
+
+          uout = 0;
+
+        }
+        
       }
       // ─────────────────────────────────────────────────────────
 
@@ -606,13 +626,31 @@ void loop() {
       step2.setTargetSpeedRad(uout);
     }
     else {  // Straight‐line auto‐sync / “balance” mode
+      /*
+      if(speedtoohigh){
 
-      if (avgSpeed > MAX_AVG_SPEED_RAD) {
-        uout -= SPEED_REDUCTION_RAD;
-        if (uout < MAX_AVG_SPEED_RAD) {
-          uout = MAX_AVG_SPEED_RAD;
+        if (abs(avgSpeed) > MAX_AVG_SPEED_RAD) {
+
+          if(uout > 0){
+
+            uout = MAX_AVG_SPEED_RAD;
+
+          }
+          else if(uout < 0){
+
+            uout = - MAX_AVG_SPEED_RAD;
+            
+          }
+          else{
+
+            uout = 0;
+
+          }
         }
+        
       }
+
+      */
 
       step1.setTargetSpeedRad(uout);
       step2.setTargetSpeedRad(uout);
@@ -623,6 +661,19 @@ void loop() {
   /* ~~~~~~~~~~~~~ OUTER POSITION LOOP ~~~~~~~~~~~~~ */
   if (now - outerT >= OUTER_INTERVAL) {
     outerT += OUTER_INTERVAL;
+
+    if (abs(avgSpeed) > MAX_AVG_SPEED_RAD) {
+
+      speedtoohigh = true;
+
+    }
+    else{
+
+      speedtoohigh = true;
+
+    }
+    SumSpeed = 0;
+    speedcount = 0;
 
     // 1) Read actual wheel positions in radians
     //    (average the two wheels → “robot center” rotation)
@@ -646,19 +697,40 @@ void loop() {
       tiltSP = 0;  // override in manual mode
     }
     else {
-      float desired = freezePosition ? freezePositionPos : g_webDesired;
+      float desired = g_webDesired;
       float posErr  = desired - posEst;
+      float absErr  = fabsf(posErr);
+      bool direct = !((avgSpeed * posErr) > 0);
       if(abs(posErr) > POSERRLIMIT){
 
-        tiltSP = - constrain(Kp_outer * posErr, -0.025f, 0.025f);
+        tiltSP = -constrain(0.06/abs(avgSpeed), -ANGLE_CONSTRAINT, ANGLE_CONSTRAINT);
+
+        if (posErr < 0){
+
+          tiltSP = - tiltSP;
+
+        }
 
       }
+      else if (absErr > POSERRSLOWLIMIT && direct) {
+          float diff       = POSERRLIMIT - POSERRSLOWLIMIT;        // = 6.0
+          float clippedErr = absErr - POSERRSLOWLIMIT;             // how far into “slow” region
+          // fraction ∈ [0,1]:  0 when absErr = 2,  1 when absErr = 8
+          float frac = clippedErr / diff;  
+          // desired magnitude = frac * ANGLE_CONSTRAINT
+          float mag = frac * ANGLE_CONSTRAINT;
+          // apply sign(posErr) exactly once, with the leading negative
+          tiltSP = - mag * (posErr > 0 ? +1.0f : -1.0f);
+        }
       else{
 
         tiltSP = 0;
+
       }
       
     }
+
+    avgSpeed = 0;
   }
 
   /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT ──────────────── */
@@ -671,7 +743,7 @@ void loop() {
     float centerPos = 0.5f * (w1pos + w2pos);
     float sp1 = step1.getSpeedRad();
     float sp2 = step2.getSpeedRad();
-    float desiredOut = (freezePosition ? freezePositionPos : g_webDesired);
+    float desiredOut = g_webDesired;
     int   Lm = wheelLeftMode ? 1 : 0;
     int   Rm = wheelRightMode ? 1 : 0;
     float diffSp = sp1 - sp2;
@@ -682,9 +754,9 @@ void loop() {
     Serial.printf(
       "tiltSP %.3f | θ %.3f | posEst %.3f | w1pos %.3f | w2pos %.3f | "
       "sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f | "
-      "manual:%d | fallen:%d\n",
+      "manual:%d | fallen:%d | avgSpeed:%.3f\n",
       tiltSP, theta, centerPos, w1pos, w2pos, sp1, sp2, desiredOut,
-      Lm, Rm, diffSp, mMode, fFlag
+      Lm, Rm, diffSp, mMode, fFlag, avgSpeed
     );
 
     // 2) Build a JSON string for /status
@@ -702,7 +774,8 @@ void loop() {
     statusJSON += "\"R\":"        + String(Rm)            + ",";
     statusJSON += "\"diff\":"     + String(diffSp, 3)    + ",";
     statusJSON += "\"manual\":"   + String(mMode)         + ",";
-    statusJSON += "\"fallen\":"   + String(fFlag);
+    statusJSON += "\"fallen\":"   + String(fFlag)       + ",";
+    statusJSON += "\"avgSpeed\":"   + String(avgSpeed, 3);
     statusJSON += "}";
 
     // Now /status will always return that JSON.
