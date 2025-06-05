@@ -45,10 +45,10 @@ const float GYRO_SPIKE_THRESHOLD  = 0.2f;     // rad/s
 const float Kd_BOOST_FACTOR       = 100.0f;
 
 // outer (position) loop gain
-const float Kp_outer = 0.3f;
+const float Kp_outer = 0.1f;
 
 /* ───────────────────── MANUAL‐DRIVE CONSTANTS ────────────────── */
-const float TILT_MANUAL = 1.0f; 
+const float TILT_MANUAL = 1.0f;
 const float TILT_ANGLE  = 0.015f;
 const float SPIN_SPEED  = 3.0f;  // rad/s wheel‐against‐wheel
 
@@ -69,6 +69,8 @@ const float SPEED_REDUCTION_RAD =  1.0f;  // rad/s
 /* ─────────────────────────── FALL‐DETECTION ───────────────────── */
 const float FALL_THRESHOLD = 0.5f;  // radians (~28.6°). Adjust as needed
 volatile bool fallen = false;       // set true once robot “falls”
+
+const float POSERRLIMIT = 5;
 
 
 /* ─────────────────────────── OBJECTS ─────────────────────────── */
@@ -95,9 +97,9 @@ volatile float  freezePositionPos  = 0.0f;   // latched position (rad)
 
 volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
 
-/* ─────────────────────── TELEMETRY STORAGE ───────────────────── */
-// Holds the latest “diagnostic” line so we can serve it via HTTP
-String statusString = "";
+/* ─────────────────────── TELEMETRY JSON ─────────────────────── */
+// We will rebuild this JSON each time in diagnostics:
+String statusJSON = "{}";
 
 
 /* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
@@ -110,101 +112,166 @@ const char HOMEPAGE[] PROGMEM = R"====(
   name="viewport"
   content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover"
     />
-<title>Remote-Controller</title>
+<title>Balance-Bot Controller</title>
 
-<!-- ——————  styles —————— -->
+<!-- ——————  minimal styles for a clean table —————— -->
 <style>
-  :root{
-    --primary:#3f51b5;--primary-dark:#303f9f;--surface:#ffffffee;
-    --surface-hover:#f1f3f7;--surface-press:var(--primary);
-    --text-main:#2b2b2b;--text-muted:#666;--radius:14px;
-    --shadow:0 4px 12px rgba(0,0,0,.14);
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f4f5f7;
+    display: flex;
+    justify-content: center;
+    padding: 20px;
   }
-  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-  html,body{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,
-            "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-            background:linear-gradient(135deg,#d7e1ec 0%,#f6f7f9 100%);}
-  body{display:flex;align-items:center;justify-content:center;padding:14px;}
-
-  .card{
-    background:var(--surface);padding:22px 26px;border-radius:var(--radius);
-    box-shadow:var(--shadow);max-width:320px;width:100%;
-    display:flex;flex-direction:column;gap:22px;
+  .card {
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    max-width: 500px;
+    width: 100%;
+    padding: 20px;
   }
-  h1{font-size:1.5rem;font-weight:600;margin:0;text-align:center;
-     color:var(--primary-dark);}
-
-  /* ---------- control pad (perfect cross) ---------- */
-  .pad{
-    display:grid;grid-template-columns:repeat(3,1fr);
-    grid-template-rows:repeat(3,1fr);gap:14px;
-    justify-items:center;align-items:center;
+  h1 {
+    margin: 0;
+    font-size: 1.4rem;
+    text-align: center;
+    color: #333;
   }
-  #up   {grid-column:2;grid-row:1;}
-  #left {grid-column:1;grid-row:2;}
-  #right{grid-column:3;grid-row:2;}
-  #down {grid-column:2;grid-row:3;}
-
-  button{
-    width:80px;height:80px;border:none;font-size:38px;font-weight:600;
-    border-radius:50%;background:var(--surface-hover);color:var(--text-main);
-    cursor:pointer;touch-action:manipulation;
-    transition:background .08s,color .08s,transform .08s;
-    user-select:none;-webkit-user-select:none;-moz-user-select:none;
-    -ms-user-select:none;-webkit-touch-callout:none;
+  .pad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 12px;
+    justify-items: center;
+    align-items: center;
+    margin: 20px 0;
   }
-  button:active,
-  button.pressed{
-    background:var(--surface-press);color:#fff;transform:scale(0.96);
+  .pad button {
+    width: 60px;
+    height: 60px;
+    border: none;
+    font-size: 1.2rem;
+    font-weight: 600;
+    border-radius: 50%;
+    background: #e0e2e5;
+    color: #333;
+    cursor: pointer;
+    transition: background .1s, transform .1s;
   }
-
-  /* ---------- numeric set-point form ---------- */
-  form{display:flex;flex-direction:column;gap:12px;text-align:center;}
-  label{font-size:.88rem;color:var(--text-muted);}
-  input[type=number]{
-    padding:8px 10px;border:1px solid #ccd1d8;border-radius:var(--radius);
-    width:120px;margin:auto;font-size:1rem;text-align:center;
+  .pad button:active,
+  .pad button.pressed {
+    background: #3f51b5;
+    color: #fff;
+    transform: scale(0.96);
   }
-  input[type=submit]{
-    padding:10px;border:none;border-radius:var(--radius);
-    background:var(--primary);color:#fff;font-size:1rem;font-weight:600;
-    cursor:pointer;transition:background .1s;
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: center;
+    margin-bottom: 20px;
   }
-  input[type=submit]:hover{background:var(--primary-dark);}
+  input[type=number] {
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    width: 100px;
+    margin: 0 auto;
+    font-size: 1rem;
+    text-align: center;
+  }
+  input[type=submit] {
+    padding: 10px 0;
+    border: none;
+    border-radius: 8px;
+    background: #3f51b5;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .1s;
+  }
+  input[type=submit]:hover {
+    background: #303f9f;
+  }
+  /* Telemetry table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+  }
+  th, td {
+    padding: 8px 6px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+  }
+  th {
+    background: #f1f3f7;
+    color: #444;
+    font-weight: 600;
+  }
+  td.value {
+    font-weight: 500;
+    color: #222;
+  }
 </style>
 
-<!-- ——————  logic —————— -->
+<!-- ——————  logic for binding buttons + fetching telemetry —————— -->
 <script>
-function send(cmd){fetch('/cmd?act='+cmd);}
-function bind(id,start,stop){
-  const el=document.getElementById(id);let rpt=null;
-  const down=e=>{
-    e.preventDefault();el.classList.add('pressed');
-    send(start);rpt=setInterval(()=>send(start),200);
-  };
-  const up=e=>{
-    e.preventDefault();el.classList.remove('pressed');
-    clearInterval(rpt);rpt=null;send(stop);
-  };
-  el.addEventListener('pointerdown',down,{passive:false});
-  ['pointerup','pointercancel','pointerleave'].forEach(ev=>
-    el.addEventListener(ev,up,{passive:false}));
+function send(cmd) {
+  fetch('/cmd?act=' + cmd);
 }
-window.addEventListener('load',()=>{
-  bind('up'   ,'up_start'   ,'up_stop');
-  bind('down' ,'down_start' ,'down_stop');
-  bind('left' ,'left_start' ,'left_stop');
-  bind('right','right_start','right_stop');
+function bind(id, start, stop) {
+  const el = document.getElementById(id);
+  let rpt = null;
+  const down = e => {
+    e.preventDefault();
+    el.classList.add('pressed');
+    send(start);
+    rpt = setInterval(() => send(start), 200);
+  };
+  const up = e => {
+    e.preventDefault();
+    el.classList.remove('pressed');
+    clearInterval(rpt);
+    rpt = null;
+    send(stop);
+  };
+  el.addEventListener('pointerdown', down, { passive: false });
+  ['pointerup','pointercancel','pointerleave'].forEach(ev =>
+    el.addEventListener(ev, up, { passive: false })
+  );
+}
 
-  // Every 500 ms, fetch /status and dump it into the <pre id="telemetry">
+window.addEventListener('load', () => {
+  bind('up',    'up_start',   'up_stop');
+  bind('down',  'down_start', 'down_stop');
+  bind('left',  'left_start', 'left_stop');
+  bind('right', 'right_start','right_stop');
+
+  // Every 500 ms, fetch /status and update the telemetry table
   setInterval(async () => {
     try {
       const resp = await fetch('/status');
       if (!resp.ok) return;
-      const txt = await resp.text();
-      document.getElementById('telemetry').innerText = txt;
+      const data = await resp.json();
+      // Update each table cell by ID
+      document.getElementById('tiltSP').innerText   = data.tiltSP.toFixed(3);
+      document.getElementById('theta').innerText    = data.theta.toFixed(3);
+      document.getElementById('posEst').innerText   = data.posEst.toFixed(3);
+      document.getElementById('w1pos').innerText    = data.w1pos.toFixed(3);
+      document.getElementById('w2pos').innerText    = data.w2pos.toFixed(3);
+      document.getElementById('sp1').innerText      = data.sp1.toFixed(3);
+      document.getElementById('sp2').innerText      = data.sp2.toFixed(3);
+      document.getElementById('desPos').innerText   = data.desPos.toFixed(3);
+      document.getElementById('L').innerText        = data.L;
+      document.getElementById('R').innerText        = data.R;
+      document.getElementById('diff').innerText     = data.diff.toFixed(3);
+      document.getElementById('manual').innerText   = data.manual;
+      document.getElementById('fallen').innerText   = data.fallen;
     } catch (e) {
-      // ignore errors
+      // ignore transient errors
     }
   }, 500);
 });
@@ -213,9 +280,9 @@ window.addEventListener('load',()=>{
 
 <body>
   <div class="card">
-    <h1>Remote-Controller</h1>
+    <h1>Balance-Bot Remote Controller</h1>
 
-    <!-- control pad ----------------------------------------------------------- -->
+    <!-- ───── control pad ───── -->
     <div class="pad">
       <button id="up">↑</button>
       <button id="left">←</button>
@@ -223,19 +290,39 @@ window.addEventListener('load',()=>{
       <button id="down">↓</button>
     </div>
 
-    <!-- numeric set-point ----------------------------------------------------- -->
+    <!-- ───── numeric set-point ───── -->
     <form action="/set" method="GET">
       <label>
-        Desired&nbsp;position
+        Desired position:
         <input type="number" step="0.01" name="val" value="0.00">
       </label>
       <input type="submit" value="Submit">
     </form>
 
-    <!-- telemetry output (populated by JavaScript) ---------------------------- -->
-    <pre id="telemetry" style="background:#f1f1f1;border-radius:8px;padding:10px;font-family:monospace;height:200px;overflow-y:auto;">
-Waiting for telemetry…
-    </pre>
+    <!-- ───── telemetry table ───── -->
+    <table>
+      <thead>
+        <tr>
+          <th>Parameter</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>tiltSP</td>   <td class="value" id="tiltSP">0.000</td></tr>
+        <tr><td>θ (theta)</td> <td class="value" id="theta">0.000</td></tr>
+        <tr><td>posEst</td>   <td class="value" id="posEst">0.000</td></tr>
+        <tr><td>w1pos</td>    <td class="value" id="w1pos">0.000</td></tr>
+        <tr><td>w2pos</td>    <td class="value" id="w2pos">0.000</td></tr>
+        <tr><td>sp1</td>      <td class="value" id="sp1">0.000</td></tr>
+        <tr><td>sp2</td>      <td class="value" id="sp2">0.000</td></tr>
+        <tr><td>desPos</td>   <td class="value" id="desPos">0.000</td></tr>
+        <tr><td>LeftMode</td> <td class="value" id="L">0</td></tr>
+        <tr><td>RightMode</td><td class="value" id="R">0</td></tr>
+        <tr><td>diff</td>     <td class="value" id="diff">0.000</td></tr>
+        <tr><td>manual</td>   <td class="value" id="manual">0</td></tr>
+        <tr><td>fallen</td>   <td class="value" id="fallen">0</td></tr>
+      </tbody>
+    </table>
   </div>
 </body>
 </html>
@@ -262,70 +349,68 @@ void handleCmd() {
     return;
   }
   if (fallen) {
-    // If already fallen, ignore any new drive commands
+    // If already fallen, ignore new drive commands
     server.send(200, "text/plain", "Ignored – robot has fallen");
     return;
   }
 
   String a = server.arg("act");
-
   /* ---- START commands ---- */
-  if      (a == "up_start")    { 
-    manualMode = true;  
-    movementoffset = TILT_MANUAL;  
-    manualTiltOffset = TILT_ANGLE;   
-    freezePosition = false;  
+  if      (a == "up_start")    {
+    manualMode = true;
+    movementoffset = TILT_MANUAL;
+    manualTiltOffset = TILT_ANGLE;
+    freezePosition = false;
   }
-  else if (a == "down_start")  { 
-    manualMode = true;  
-    movementoffset = -TILT_MANUAL;  
-    manualTiltOffset = -TILT_ANGLE;  
-    freezePosition = false;  
+  else if (a == "down_start")  {
+    manualMode = true;
+    movementoffset = -TILT_MANUAL;
+    manualTiltOffset = -TILT_ANGLE;
+    freezePosition = false;
   }
-  else if (a == "left_start")  { 
-    wheelLeftMode = true;  
-    wheelRightMode = false; 
-    freezePosition = false; 
+  else if (a == "left_start")  {
+    wheelLeftMode = true;
+    wheelRightMode = false;
+    freezePosition = false;
   }
-  else if (a == "right_start") { 
-    wheelRightMode = true; 
-    wheelLeftMode = false;  
-    freezePosition = false; 
+  else if (a == "right_start") {
+    wheelRightMode = true;
+    wheelLeftMode = false;
+    freezePosition = false;
   }
-
   /* ---- STOP commands ---- */
   else if (a == "up_stop" || a == "down_stop") {
-    movementoffset = 0; 
-    manualTiltOffset = 0; 
+    movementoffset = 0;
+    manualTiltOffset = 0;
     manualMode = false;
-    freezePosition = true;         // latch current position
-    // We’ll set freezePositionPos in loop() on next outer‐tick
+    freezePosition = true;  // latch current position
+    // freezePositionPos will be set in loop() on next outer‐tick
   }
   else if (a == "left_stop") {
     wheelLeftMode = false;
     freezePosition = true;
-    step1.setTargetSpeedRad(0);  
-    step2.setTargetSpeedRad(0);  
+    step1.setTargetSpeedRad(0);
+    step2.setTargetSpeedRad(0);
     delay(40);
   }
   else if (a == "right_stop") {
     wheelRightMode = false;
     freezePosition = true;
-    step1.setTargetSpeedRad(0);  
-    step2.setTargetSpeedRad(0);  
+    step1.setTargetSpeedRad(0);
+    step2.setTargetSpeedRad(0);
     delay(40);
   }
-  else { 
-    server.send(400, "text/plain", "Unknown command"); 
-    return; 
+  else {
+    server.send(400, "text/plain", "Unknown command");
+    return;
   }
 
   server.send(200, "text/plain", "OK");
 }
 
-// New handler: returns the latest telemetry line
+// Returns latest telemetry as JSON
 void handleStatus() {
-  server.send(200, "text/plain", statusString);
+  server.send(200, "application/json", statusJSON);
 }
 
 /* ───────────────────── STEPPER TIMER ISR ─────────────────────── */
@@ -342,7 +427,7 @@ bool IRAM_ATTR TimerHandler(void*) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("=== ESP32 Balance-Bot v3.2 (With Web Telemetry) ===");
+  Serial.println("=== ESP32 Balance-Bot v3.2 (Web Telemetry) ===");
 
   /* Wi-Fi AP */
   WiFi.softAP("ESP32_BalanceBot", "12345678");
@@ -350,9 +435,9 @@ void setup() {
   Serial.println(WiFi.softAPIP());
 
   /* Web routes */
-  server.on("/",      handleRoot);
-  server.on("/set",   handleSet);
-  server.on("/cmd",   handleCmd);
+  server.on("/",       handleRoot);
+  server.on("/set",    handleSet);
+  server.on("/cmd",    handleCmd);
   server.on("/status", handleStatus);
   server.begin();
 
@@ -427,38 +512,43 @@ void loop() {
 
     // ─── FALL DETECTION & RECOVERY ─────────────────────────────────
     if (!fallen && fabsf(theta) > FALL_THRESHOLD) {
-      // Just detected a fall
       fallen = true;
       Serial.println("Rover has fallen!");
     }
     else if (fallen && fabsf(theta) <= FALL_THRESHOLD) {
-      // Tilt is back under threshold → clear fallen flag
       fallen = false;
       Serial.println("Rover recovered, resuming operation");
-      // (Optionally zero‐out integral if you want a “fresh‐start”)
+      // (Optionally, reset integral if you want a fresh start)
       // integral = 0.0f;
     }
 
+    err_inner = (ref + tiltSP) - theta;
+
     // 4) Inner‐loop error & integral/derivative
+    /*
     if (fabsf(ref - theta) < 0.01f) {
       err_inner = (ref + tiltSP) - theta;
     } else {
       err_inner = ref - theta;
-    }
-
+    } 
+    */
+    
     integral += err_inner * dt;
     float deriv = -gyro_y;
     float Kd_eff = Kd_inner;
+    /*
     if ((fabsf(err_inner) < ERROR_SMALL_THRESHOLD) &&
         (fabsf(gyro_y)    > GYRO_SPIKE_THRESHOLD) &&
         !manualMode) {
       Kd_eff *= Kd_BOOST_FACTOR;
-    }
+    } 
+    */
 
     uout = Kp_inner * err_inner
          + Ki_inner * integral
          + Kd_eff * deriv;
 
+    float avgSpeed = 0.5f * (sp1_meas + sp2_meas);
 
     /* ----- DRIVE WHEELS BASED ON MODE (unless fallen) ----- */
     if (fallen) {
@@ -467,35 +557,42 @@ void loop() {
       step2.setTargetSpeedRad(0);
     }
     else if (wheelLeftMode) {            // ← spin in place
-      step1.setTargetSpeedRad(uout + SPIN_SPEED);  
-      step2.setTargetSpeedRad(uout - SPIN_SPEED);  
+      step1.setTargetSpeedRad(uout + SPIN_SPEED);
+      step2.setTargetSpeedRad(uout - SPIN_SPEED);
     }
     else if (wheelRightMode) {      // → spin in place
       step1.setTargetSpeedRad(uout - SPIN_SPEED);
       step2.setTargetSpeedRad(uout + SPIN_SPEED);
     }
     else if (manualMode) {
-      // ─── “manual‐mode speed limiter” (unchanged) ───
-      float avgSpeed = 0.5f * (sp1_meas + sp2_meas);
+      // ─── “manual‐mode speed limiter” ─────────────────────────
+      
       if (avgSpeed > MAX_AVG_SPEED_RAD) {
         uout -= SPEED_REDUCTION_RAD;
         if (uout < MAX_AVG_SPEED_RAD) {
           uout = MAX_AVG_SPEED_RAD;
         }
       }
-      // ──────────────────────────────────────────────
+      // ─────────────────────────────────────────────────────────
 
       // Both wheels in tandem under manual tilt:
       step1.setTargetSpeedRad(uout);
       step2.setTargetSpeedRad(uout);
     }
     else {  // Straight‐line auto‐sync / “balance” mode
+
+      if (avgSpeed > MAX_AVG_SPEED_RAD) {
+        uout -= SPEED_REDUCTION_RAD;
+        if (uout < MAX_AVG_SPEED_RAD) {
+          uout = MAX_AVG_SPEED_RAD;
+        }
+      }
+
       step1.setTargetSpeedRad(uout);
       step2.setTargetSpeedRad(uout);
-      // (Auto‐sync PI on speed difference would go here if desired)
+      // (Auto‐sync PI on speed difference could go here)
     }
   }
-
 
   /* ~~~~~~~~~~~~~ OUTER POSITION LOOP ~~~~~~~~~~~~~ */
   if (now - outerT >= OUTER_INTERVAL) {
@@ -509,9 +606,9 @@ void loop() {
 
     // 2) If we just left manual mode, latch freezePositionPos:
     if (!manualMode && freezePosition) {
-      // Once we drop out of manual, we want to hold wherever we were
+      // Once we drop out of manual, hold wherever we were
       freezePositionPos = posEst;
-      // Keep freezePosition = true until user issues a new setpoint
+      // Keep freezePosition = true until user sets a new setpoint
     }
 
     // 3) Compute tiltSP based on manual vs. position control
@@ -525,16 +622,24 @@ void loop() {
     else {
       float desired = freezePosition ? freezePositionPos : g_webDesired;
       float posErr  = desired - posEst;
-      tiltSP = constrain(Kp_outer * posErr, -0.187f, 0.013f);
+      if(abs(posErr) > POSERRLIMIT){
+
+        tiltSP = - constrain(Kp_outer * posErr, -0.015f, 0.015f);
+
+      }
+      else{
+
+        tiltSP = 0;
+      }
+      
     }
   }
 
-
-  /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT ~~~~~~~~~~~~~ */
+  /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT ──────────────── */
   if (now - printT >= PRINT_INTERVAL) {
     printT += PRINT_INTERVAL;
 
-    // Gather all the values to print/store
+    // Gather all telemetry values
     float w1pos = step1.getPositionRad();
     float w2pos = step2.getPositionRad();
     float centerPos = 0.5f * (w1pos + w2pos);
@@ -547,30 +652,33 @@ void loop() {
     int   mMode = manualMode ? 1 : 0;
     int   fFlag = fallen ? 1 : 0;
 
-    // Format into a buffer
-    char buf[256];
-    snprintf(buf, sizeof(buf),
+    // 1) Print one nicely formatted line to Serial
+    Serial.printf(
       "tiltSP %.3f | θ %.3f | posEst %.3f | w1pos %.3f | w2pos %.3f | "
       "sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f | "
-      "manual:%d | fallen:%d",
-      tiltSP,
-      theta,
-      centerPos,
-      w1pos,
-      w2pos,
-      sp1,
-      sp2,
-      desiredOut,
-      Lm,
-      Rm,
-      diffSp,
-      mMode,
-      fFlag
+      "manual:%d | fallen:%d\n",
+      tiltSP, theta, centerPos, w1pos, w2pos, sp1, sp2, desiredOut,
+      Lm, Rm, diffSp, mMode, fFlag
     );
 
-    // Print to Serial
-    Serial.println(buf);
-    // Also save it into statusString so /status can return it
-    statusString = String(buf);
+    // 2) Build a JSON string for /status
+    //    Example: {"tiltSP":0.012,"theta":-0.034,...,"fallen":0}
+    statusJSON = "{";
+    statusJSON += "\"tiltSP\":"   + String(tiltSP, 3)   + ",";
+    statusJSON += "\"theta\":"    + String(theta, 3)    + ",";
+    statusJSON += "\"posEst\":"   + String(centerPos, 3) + ",";
+    statusJSON += "\"w1pos\":"    + String(w1pos, 3)     + ",";
+    statusJSON += "\"w2pos\":"    + String(w2pos, 3)     + ",";
+    statusJSON += "\"sp1\":"      + String(sp1, 3)       + ",";
+    statusJSON += "\"sp2\":"      + String(sp2, 3)       + ",";
+    statusJSON += "\"desPos\":"   + String(desiredOut, 3)+ ",";
+    statusJSON += "\"L\":"        + String(Lm)            + ",";
+    statusJSON += "\"R\":"        + String(Rm)            + ",";
+    statusJSON += "\"diff\":"     + String(diffSp, 3)    + ",";
+    statusJSON += "\"manual\":"   + String(mMode)         + ",";
+    statusJSON += "\"fallen\":"   + String(fFlag);
+    statusJSON += "}";
+
+    // Now /status will always return that JSON.
   }
 }
