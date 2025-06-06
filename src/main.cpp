@@ -30,14 +30,14 @@ const int TOGGLE_PIN         = 32;
 const int PRINT_INTERVAL        = 500;      // ms
 const int INNER_INTERVAL        = 20;       // ms
 const int STEPPER_INTERVAL_US   = 20;       // µs
-const unsigned long OUTER_INTERVAL = 200;   // ms
+const unsigned long OUTER_INTERVAL = 100;   // ms
 
 /* ───────────────────── PID & FILTER CONSTANTS ────────────────── */
-const float Kp_inner        = 1000.0f;
+const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.055f;    // rad
+const float REFERENCE_ANGLE = -0.04f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -483,8 +483,8 @@ void setup() {
     while (1) delay(10);
   }
 
-  step1.setAccelerationRad(15.0f);
-  step2.setAccelerationRad(15.0f);
+  step1.setAccelerationRad(30.0f);
+  step2.setAccelerationRad(30.0f);
 }
 
 /* ────────────────────────── MAIN LOOP ───────────────────────── */
@@ -706,7 +706,7 @@ void loop() {
 
         if(posErr < 0){
 
-          Kp = (-0.05)/(3.8);
+          Kp = (-0.05)/(2);
 
         }else{
 
@@ -714,23 +714,23 @@ void loop() {
 
         }
 
-        tiltSP = -constrain((Kp/abs(avgSpeed)), -ANGLE_CONSTRAINT/3.8, ANGLE_CONSTRAINT);
+        tiltSP = -constrain((Kp/abs(avgSpeed)), -ANGLE_CONSTRAINT/2, ANGLE_CONSTRAINT);
 
 
       }
       else if (absErr > POSERRSLOWLIMIT) {
 
-        if (posErr < 0){
+        if(posErr < 0){
 
-          mult = -1;
+          Kp = (-0.025)/(2);
 
         }else{
 
-          mult = 1;
+          Kp = 0.025;
 
         }
 
-        tiltSP = -constrain(mult*(0.03/abs(avgSpeed)), -ANGLE_CONSTRAINT/3.3, ANGLE_CONSTRAINT);
+        tiltSP = -constrain((Kp/abs(avgSpeed) * ((abs(posErr)-5)/10)), -ANGLE_CONSTRAINT/2, ANGLE_CONSTRAINT);
 
         }
       else{
