@@ -403,25 +403,18 @@ void handleCmd() {
 
   String a = server.arg("act");
   /* ---- START commands ---- */
-  if      (a == "up_start")    {
-    manualMode = true;
-    movementoffset = TILT_MANUAL;
-    manualTiltOffset = TILT_ANGLE;
-    freezePosition = false;
+  if (a == "up_start") {
+    // grab the current centre‐position of the two wheels
+    float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
+    // bump the desired set-point 15 radians ahead
+    g_webDesired = pos + 15.0f;
   }
-  else if (a == "down_start")  {
-    manualMode = true;
-    movementoffset = -TILT_MANUAL;
-    manualTiltOffset = -TILT_ANGLE;
-    freezePosition = false;
+  else if (a == "down_start") {
+    float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
+    g_webDesired = pos - 15.0f;
   }
-  /* ---- STOP commands ---- */
   else if (a == "up_stop" || a == "down_stop") {
-    movementoffset = 0;
-    manualTiltOffset = 0;
-    manualMode = false;
-    freezePosition = true;  // latch current position
-    // freezePositionPos will be set in loop() on next outer‐tick
+   
   }
   else if (a == "left_start")  {
     rotationLeftMode  = true;
@@ -610,19 +603,12 @@ void loop() {
       if (errRot < -PI) errRot += 2*PI;
       rotCorrection = Kp_rot * errRot;
 
-      if(abs(errRot) < MAX_ROTATION_OFFSET){
 
-        step1.setTargetSpeedRad(uout);
-        step2.setTargetSpeedRad(uout);
-
-      }
-      else{
-
-        step1.setTargetSpeedRad(uout + rotCorrection);
-        step2.setTargetSpeedRad(uout - rotCorrection);
+      step1.setTargetSpeedRad(uout + rotCorrection);
+      step2.setTargetSpeedRad(uout - rotCorrection);
       // (Auto‐sync PI on speed difference could go here)
 
-      }
+      
 
       
     }
@@ -703,30 +689,6 @@ void loop() {
 
     avgSpeed = 0;
   }
-
-    /* ───── rotation controller (every 400 ms) ───── */
-  /* every 400 ms… 
-  if (now - rotationT >= ROT_INTERVAL) {
-    rotationT += ROT_INTERVAL;
-
-    // 1) actual heading
-    float w1      = step1.getPositionRad();
-    float w2      = step2.getPositionRad();
-    float heading = 0.5f * (w1 - w2);
-
-    // 2) while ◀/▶ held, set-point = heading ± small offset
-    if      (rotationRightMode) desiredHeading = heading + ROT_OFFSET;
-    else if (rotationLeftMode)  desiredHeading = heading - ROT_OFFSET;
-
-    // 3) P-control
-    float errRot = desiredHeading - heading;
-    if (errRot >  PI) errRot -= 2*PI;
-    if (errRot < -PI) errRot += 2*PI;
-    rotCorrection = Kp_rot * errRot;
-
-  }
-
-  */
 
   /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT & BUILD JSON (500 ms) ~~~~~~~~~~~~~ */
   if (now - printT >= PRINT_INTERVAL) {
