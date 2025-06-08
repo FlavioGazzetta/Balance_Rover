@@ -53,6 +53,15 @@ const float TILT_ANGLE  = 0.015f;
 const float SPIN_SPEED  = 3.0f;  // rad/s wheel‐against‐wheel
 
 
+const float ROT_OFFSET = 0.15f;  // rad  (≈8.4°)
+
+static unsigned long rotationT      = 0;
+const  unsigned long ROT_INTERVAL   = 200;     // ms
+static float          prevHeading    = 0.0f;   // last heading (rad)
+static float          desiredHeading = 0.0f;   // set‐point
+const  float          Kp_rot         = 2.0f;   // P‐gain
+
+
 /* ─────────────────────────────────────────────────────────────────
    ───  “manual‐mode speed limiter” constants (unchanged)     𐄂
    ───────────────────────────────────────────────────────────────── */
@@ -92,6 +101,10 @@ volatile bool   freezePosition     = false;  // “hold here” flag
 volatile float  freezePositionPos  = 0.0f;   // latched position (rad)
 
 volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
+
+volatile bool rotationLeftMode  = false;  // ◀️ held?
+volatile bool rotationRightMode = false;  // ▶️ held?
+
 
 /* ─────────────────────── TELEMETRY JSON ─────────────────────── */
 // We will rebuild this JSON each time in diagnostics:
@@ -154,6 +167,9 @@ const char HOMEPAGE[] PROGMEM = R"====(
     color: #333;
     cursor: pointer;
     transition: background .1s, transform .1s;
+    user-select: none;          /* disable text selection */
+    -webkit-user-select: none;  /* Safari/Chrome */
+    -moz-user-select: none;     /* Firefox */
   }
   .pad button:active,
   .pad button.pressed {
@@ -267,6 +283,8 @@ const char HOMEPAGE[] PROGMEM = R"====(
         document.getElementById("diff").innerText     = data.diff.toFixed(3);
         document.getElementById("manual").innerText   = data.manual;
         document.getElementById("fallen").innerText   = data.fallen;
+        document.getElementById("heading").innerText = data.heading.toFixed(3);
+        document.getElementById("desHeading").innerText = data.desiredHeading.toFixed(3);
         document.getElementById("avgSpeed").innerText   = data.avgSpeed.toFixed(3);
       } catch (e) {
         // ignore transient errors
@@ -306,10 +324,17 @@ const char HOMEPAGE[] PROGMEM = R"====(
 
     <!-- ───── control pad ───── -->
     <div class="pad">
+      <div></div>
       <button id="up">↑</button>
+      <div></div>
+
       <button id="left">←</button>
+      <div></div>
       <button id="right">→</button>
+
+      <div></div>
       <button id="down">↓</button>
+      <div></div>
     </div>
 
     <!-- ───── numeric set-point ───── -->
@@ -344,6 +369,8 @@ const char HOMEPAGE[] PROGMEM = R"====(
         <tr><td>diff</td>     <td class="value" id="diff">0.000</td></tr>
         <tr><td>manual</td>   <td class="value" id="manual">0</td></tr>
         <tr><td>fallen</td>   <td class="value" id="fallen">0</td></tr>
+        <tr><td>heading (rad)</td><td class="value" id="heading">0.000</td></tr>
+        <tr><td>desiredHeading (rad)</td><td class="value" id="desHeading">0.000</td></tr>
         <tr><td>avgSpeed</td>   <td class="value" id="avgSpeed">0.000</td></tr>
       </tbody>
     </table>
@@ -392,16 +419,6 @@ void handleCmd() {
     manualTiltOffset = -TILT_ANGLE;
     freezePosition = false;
   }
-  else if (a == "left_start")  {
-    wheelLeftMode = true;
-    wheelRightMode = false;
-    freezePosition = false;
-  }
-  else if (a == "right_start") {
-    wheelRightMode = true;
-    wheelLeftMode = false;
-    freezePosition = false;
-  }
   /* ---- STOP commands ---- */
   else if (a == "up_stop" || a == "down_stop") {
     movementoffset = 0;
@@ -410,19 +427,19 @@ void handleCmd() {
     freezePosition = true;  // latch current position
     // freezePositionPos will be set in loop() on next outer‐tick
   }
-  else if (a == "left_stop") {
-    wheelLeftMode = false;
-    freezePosition = true;
-    step1.setTargetSpeedRad(0);
-    step2.setTargetSpeedRad(0);
-    delay(40);
+  else if (a == "left_start")  {
+    rotationLeftMode  = true;
+    rotationRightMode = false;
   }
-  else if (a == "right_stop") {
-    wheelRightMode = false;
-    freezePosition = true;
-    step1.setTargetSpeedRad(0);
-    step2.setTargetSpeedRad(0);
-    delay(40);
+  else if (a == "left_stop")   {
+    rotationLeftMode  = false;
+  }
+  else if (a == "right_start") {
+    rotationRightMode = true;
+    rotationLeftMode  = false;
+  }
+  else if (a == "right_stop")  {
+    rotationRightMode = false;
   }
   else {
     server.send(400, "text/plain", "Unknown command");
@@ -485,12 +502,16 @@ void setup() {
 
   step1.setAccelerationRad(30.0f);
   step2.setAccelerationRad(30.0f);
+
 }
+
+float rotCorrection = 0;
 
 /* ────────────────────────── MAIN LOOP ───────────────────────── */
 void loop() {
   unsigned long now = millis();
   server.handleClient();  // handle web requests
+
 
   /* --------------- INNER LOOP (20 ms) ---------------- */
   static unsigned long prevTime = now, innerT = 0;
@@ -552,26 +573,10 @@ void loop() {
     }
 
     err_inner = (ref + tiltSP) - theta;
-
-    // 4) Inner‐loop error & integral/derivative
-    /*
-    if (fabsf(ref - theta) < 0.01f) {
-      err_inner = (ref + tiltSP) - theta;
-    } else {
-      err_inner = ref - theta;
-    } 
-    */
     
     integral += err_inner * dt;
     float deriv = -gyro_y;
     float Kd_eff = Kd_inner;
-    /*
-    if ((fabsf(err_inner) < ERROR_SMALL_THRESHOLD) &&
-        (fabsf(gyro_y)    > GYRO_SPIKE_THRESHOLD) &&
-        !manualMode) {
-      Kd_eff *= Kd_BOOST_FACTOR;
-    } 
-    */
 
     uout = Kp_inner * err_inner
          + Ki_inner * integral
@@ -589,71 +594,15 @@ void loop() {
       step1.setTargetSpeedRad(0);
       step2.setTargetSpeedRad(0);
     }
-    else if (wheelLeftMode) {            // ← spin in place
-      step1.setTargetSpeedRad(uout + SPIN_SPEED);
-      step2.setTargetSpeedRad(uout - SPIN_SPEED);
-    }
-    else if (wheelRightMode) {      // → spin in place
-      step1.setTargetSpeedRad(uout - SPIN_SPEED);
-      step2.setTargetSpeedRad(uout + SPIN_SPEED);
-    }
     else if (manualMode) {
       // ─── “manual‐mode speed limiter” ─────────────────────────
-      
-      if (abs(avgSpeed) > MAX_AVG_SPEED_RAD) {
-
-        if(uout > 0){
-
-          uout = MAX_AVG_SPEED_RAD;
-
-        }
-        else if(uout < 0){
-
-          uout = - MAX_AVG_SPEED_RAD;
-          
-        }
-        else{
-
-          uout = 0;
-
-        }
-        
-      }
-      // ─────────────────────────────────────────────────────────
-
       // Both wheels in tandem under manual tilt:
       step1.setTargetSpeedRad(uout);
       step2.setTargetSpeedRad(uout);
     }
     else {  // Straight‐line auto‐sync / “balance” mode
-      /*
-      if(speedtoohigh){
-
-        if (abs(avgSpeed) > MAX_AVG_SPEED_RAD) {
-
-          if(uout > 0){
-
-            uout = MAX_AVG_SPEED_RAD;
-
-          }
-          else if(uout < 0){
-
-            uout = - MAX_AVG_SPEED_RAD;
-            
-          }
-          else{
-
-            uout = 0;
-
-          }
-        }
-        
-      }
-
-      */
-
-      step1.setTargetSpeedRad(uout);
-      step2.setTargetSpeedRad(uout);
+      step1.setTargetSpeedRad(uout + rotCorrection);
+      step2.setTargetSpeedRad(uout - rotCorrection);
       // (Auto‐sync PI on speed difference could go here)
     }
   }
@@ -744,51 +693,83 @@ void loop() {
     avgSpeed = 0;
   }
 
-  /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT ──────────────── */
+    /* ───── rotation controller (every 400 ms) ───── */
+  /* every 400 ms… */
+  if (now - rotationT >= ROT_INTERVAL) {
+    rotationT += ROT_INTERVAL;
+
+    // 1) actual heading
+    float w1      = step1.getPositionRad();
+    float w2      = step2.getPositionRad();
+    float heading = 0.5f * (w1 - w2);
+
+    // 2) while ◀/▶ held, set-point = heading ± small offset
+    if      (rotationRightMode) desiredHeading = heading + ROT_OFFSET;
+    else if (rotationLeftMode)  desiredHeading = heading - ROT_OFFSET;
+
+    // 3) P-control
+    float errRot = desiredHeading - heading;
+    if (errRot >  PI) errRot -= 2*PI;
+    if (errRot < -PI) errRot += 2*PI;
+    rotCorrection = constrain(Kp_rot * errRot, -1.0f, 1.0f);
+
+    // 4) apply on top of uout
+    if (!manualMode && !fallen) {
+      step1.setTargetSpeedRad(uout + rotCorrection);
+      step2.setTargetSpeedRad(uout - rotCorrection);
+    }
+  }
+
+  /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT & BUILD JSON (500 ms) ~~~~~~~~~~~~~ */
   if (now - printT >= PRINT_INTERVAL) {
     printT += PRINT_INTERVAL;
 
-    // Gather all telemetry values
-    float w1pos = step1.getPositionRad();
-    float w2pos = step2.getPositionRad();
-    float centerPos = 0.5f * (w1pos + w2pos);
-    float sp1 = step1.getSpeedRad();
-    float sp2 = step2.getSpeedRad();
-    float desiredOut = g_webDesired;
-    int   Lm = wheelLeftMode ? 1 : 0;
-    int   Rm = wheelRightMode ? 1 : 0;
-    float diffSp = sp1 - sp2;
-    int   mMode = manualMode ? 1 : 0;
-    int   fFlag = fallen ? 1 : 0;
+    // 1) Read wheel positions & compute headings
+    float w1pos      = step1.getPositionRad();
+    float w2pos      = step2.getPositionRad();
+    float centerPos  = 0.5f * (w1pos + w2pos);
+    float heading    = 0.5f * (w1pos - w2pos);
 
-    // 1) Print one nicely formatted line to Serial
+    // 2) Other telemetry
+    float sp1        = step1.getSpeedRad();
+    float sp2        = step2.getSpeedRad();
+    float desiredOut = g_webDesired;
+    int   Lm         = wheelLeftMode ? 1 : 0;
+    int   Rm         = wheelRightMode ? 1 : 0;
+    float diffSp     = sp1 - sp2;
+    int   mMode      = manualMode ? 1 : 0;
+    int   fFlag      = fallen ? 1 : 0;
+
+    // 3) Print to Serial, including desiredHeading
     Serial.printf(
-      "tiltSP %.3f | θ %.3f | posEst %.3f | w1pos %.3f | w2pos %.3f | "
-      "sp1 %.3f | sp2 %.3f | desPos %.3f | L %d | R %d | diff %.3f | "
-      "manual:%d | fallen:%d | avgSpeed:%.3f\n",
-      tiltSP, theta, centerPos, w1pos, w2pos, sp1, sp2, desiredOut,
-      Lm, Rm, diffSp, mMode, fFlag, avgSpeed
+      "tiltSP %.3f | θ %.3f | heading %.3f | desiredHeading %.3f | "
+      "posEst %.3f | w1pos %.3f | w2pos %.3f | sp1 %.3f | sp2 %.3f | "
+      "desPos %.3f | L %d | R %d | diff %.3f | manual:%d | fallen:%d | "
+      "avgSpeed:%.3f\n",
+      tiltSP, theta, heading, desiredHeading,
+      centerPos, w1pos, w2pos, sp1, sp2,
+      desiredOut, Lm, Rm, diffSp, mMode, fFlag, avgSpeed
     );
 
-    // 2) Build a JSON string for /status
-    //    Example: {"tiltSP":0.012,"theta":-0.034,...,"fallen":0}
+    // 4) Build JSON for /status, including desiredHeading
     statusJSON = "{";
-    statusJSON += "\"tiltSP\":"   + String(tiltSP, 3)   + ",";
-    statusJSON += "\"theta\":"    + String(theta, 3)    + ",";
-    statusJSON += "\"posEst\":"   + String(centerPos, 3) + ",";
-    statusJSON += "\"w1pos\":"    + String(w1pos, 3)     + ",";
-    statusJSON += "\"w2pos\":"    + String(w2pos, 3)     + ",";
-    statusJSON += "\"sp1\":"      + String(sp1, 3)       + ",";
-    statusJSON += "\"sp2\":"      + String(sp2, 3)       + ",";
-    statusJSON += "\"desPos\":"   + String(desiredOut, 3)+ ",";
-    statusJSON += "\"L\":"        + String(Lm)            + ",";
-    statusJSON += "\"R\":"        + String(Rm)            + ",";
-    statusJSON += "\"diff\":"     + String(diffSp, 3)    + ",";
-    statusJSON += "\"manual\":"   + String(mMode)         + ",";
-    statusJSON += "\"fallen\":"   + String(fFlag)       + ",";
-    statusJSON += "\"avgSpeed\":"   + String(avgSpeed, 3);
+    statusJSON += "\"tiltSP\":"        + String(tiltSP, 3)        + ",";
+    statusJSON += "\"theta\":"         + String(theta, 3)         + ",";
+    statusJSON += "\"heading\":"       + String(heading, 3)       + ",";
+    statusJSON += "\"desiredHeading\":" + String(desiredHeading, 3)+ ",";
+    statusJSON += "\"posEst\":"        + String(centerPos, 3)     + ",";
+    statusJSON += "\"w1pos\":"         + String(w1pos, 3)         + ",";
+    statusJSON += "\"w2pos\":"         + String(w2pos, 3)         + ",";
+    statusJSON += "\"sp1\":"           + String(sp1, 3)           + ",";
+    statusJSON += "\"sp2\":"           + String(sp2, 3)           + ",";
+    statusJSON += "\"desPos\":"        + String(desiredOut, 3)    + ",";
+    statusJSON += "\"L\":"             + String(Lm)               + ",";
+    statusJSON += "\"R\":"             + String(Rm)               + ",";
+    statusJSON += "\"diff\":"          + String(diffSp, 3)        + ",";
+    statusJSON += "\"manual\":"        + String(mMode)            + ",";
+    statusJSON += "\"fallen\":"        + String(fFlag)            + ",";
+    statusJSON += "\"avgSpeed\":"      + String(avgSpeed, 3);
     statusJSON += "}";
-
-    // Now /status will always return that JSON.
   }
+
 }
