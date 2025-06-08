@@ -54,6 +54,7 @@ const float SPIN_SPEED  = 3.0f;  // rad/s wheel‐against‐wheel
 
 
 const float ROT_OFFSET = 0.15f;  // rad  (≈8.4°)
+const float MAX_ROTATION_OFFSET = 0.1;
 
 static unsigned long rotationT      = 0;
 const  unsigned long ROT_INTERVAL   = 200;     // ms
@@ -61,11 +62,6 @@ static float          prevHeading    = 0.0f;   // last heading (rad)
 static float          desiredHeading = 0.0f;   // set‐point
 const  float          Kp_rot         = 2.0f;   // P‐gain
 
-
-/* ─────────────────────────────────────────────────────────────────
-   ───  “manual‐mode speed limiter” constants (unchanged)     𐄂
-   ───────────────────────────────────────────────────────────────── */
-const float MAX_AVG_SPEED_RAD   = 10.0f;  // rad/s
 /* ─────────────────────────────────────────────────────────────────
    ───────────────────────────────────────────────────────────────── */
 
@@ -578,9 +574,7 @@ void loop() {
     float deriv = -gyro_y;
     float Kd_eff = Kd_inner;
 
-    uout = Kp_inner * err_inner
-         + Ki_inner * integral
-         + Kd_eff * deriv;
+    uout = Kp_inner * err_inner + Ki_inner * integral + Kd_eff * deriv;
 
     speedcount ++;
 
@@ -601,9 +595,36 @@ void loop() {
       step2.setTargetSpeedRad(uout);
     }
     else {  // Straight‐line auto‐sync / “balance” mode
-      step1.setTargetSpeedRad(uout + rotCorrection);
-      step2.setTargetSpeedRad(uout - rotCorrection);
+      
+      float w1      = step1.getPositionRad();
+      float w2      = step2.getPositionRad();
+      float heading = 0.5f * (w1 - w2);
+
+      // 2) while ◀/▶ held, set-point = heading ± small offset
+      if      (rotationRightMode) desiredHeading = heading + ROT_OFFSET;
+      else if (rotationLeftMode)  desiredHeading = heading - ROT_OFFSET;
+
+      // 3) P-control
+      float errRot = desiredHeading - heading;
+      if (errRot >  PI) errRot -= 2*PI;
+      if (errRot < -PI) errRot += 2*PI;
+      rotCorrection = Kp_rot * errRot;
+
+      if(abs(errRot) < MAX_ROTATION_OFFSET){
+
+        step1.setTargetSpeedRad(uout);
+        step2.setTargetSpeedRad(uout);
+
+      }
+      else{
+
+        step1.setTargetSpeedRad(uout + rotCorrection);
+        step2.setTargetSpeedRad(uout - rotCorrection);
       // (Auto‐sync PI on speed difference could go here)
+
+      }
+
+      
     }
   }
 
@@ -611,16 +632,6 @@ void loop() {
   if (now - outerT >= OUTER_INTERVAL) {
     outerT += OUTER_INTERVAL;
 
-    if (abs(avgSpeed) > MAX_AVG_SPEED_RAD) {
-
-      speedtoohigh = true;
-
-    }
-    else{
-
-      speedtoohigh = true;
-
-    }
     SumSpeed = 0;
     speedcount = 0;
 
@@ -694,7 +705,7 @@ void loop() {
   }
 
     /* ───── rotation controller (every 400 ms) ───── */
-  /* every 400 ms… */
+  /* every 400 ms… 
   if (now - rotationT >= ROT_INTERVAL) {
     rotationT += ROT_INTERVAL;
 
@@ -711,14 +722,11 @@ void loop() {
     float errRot = desiredHeading - heading;
     if (errRot >  PI) errRot -= 2*PI;
     if (errRot < -PI) errRot += 2*PI;
-    rotCorrection = constrain(Kp_rot * errRot, -1.0f, 1.0f);
+    rotCorrection = Kp_rot * errRot;
 
-    // 4) apply on top of uout
-    if (!manualMode && !fallen) {
-      step1.setTargetSpeedRad(uout + rotCorrection);
-      step2.setTargetSpeedRad(uout - rotCorrection);
-    }
   }
+
+  */
 
   /* ~~~~~~~~~~~~~ DIAGNOSTICS PRINT & BUILD JSON (500 ms) ~~~~~~~~~~~~~ */
   if (now - printT >= PRINT_INTERVAL) {
