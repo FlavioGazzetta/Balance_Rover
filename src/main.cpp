@@ -53,7 +53,7 @@ const float TILT_ANGLE  = 0.015f;
 const float SPIN_SPEED  = 3.0f;  // rad/s wheel‐against‐wheel
 
 
-const float ROT_OFFSET = 0.15f;  // rad  (≈8.4°)
+const float ROT_OFFSET = 1.0f;  // rad  (≈8.4°)
 const float MAX_ROTATION_OFFSET = 0.1;
 
 static unsigned long rotationT      = 0;
@@ -98,12 +98,9 @@ volatile float  freezePositionPos  = 0.0f;   // latched position (rad)
 
 volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
 
-volatile bool rotationLeftMode  = false;  // ◀️ held?
-volatile bool rotationRightMode = false;  // ▶️ held?
-
 volatile float  h_webDesired       = 0.0f;
 
-const float H_DEAD = 0.1;
+const float H_DEAD = 0.9;
 
 
 /* ─────────────────────── TELEMETRY JSON ─────────────────────── */
@@ -583,12 +580,6 @@ void loop() {
       step1.setTargetSpeedRad(0);
       step2.setTargetSpeedRad(0);
     }
-    else if (manualMode) {
-      // ─── “manual‐mode speed limiter” ─────────────────────────
-      // Both wheels in tandem under manual tilt:
-      step1.setTargetSpeedRad(uout);
-      step2.setTargetSpeedRad(uout);
-    }
     else {  // Straight‐line auto‐sync / “balance” mode
       
       float w1      = step1.getPositionRad();
@@ -604,10 +595,9 @@ void loop() {
 
       if (abs(errRot) < H_DEAD ){
 
-        rotCorrection = rotCorrection * abs(errRot);
+        rotCorrection = rotCorrection * abs(errRot) * abs(errRot);
 
       }
-
 
       step1.setTargetSpeedRad(uout + rotCorrection);
       step2.setTargetSpeedRad(uout - rotCorrection);
