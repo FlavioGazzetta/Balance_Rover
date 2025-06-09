@@ -37,7 +37,7 @@ const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.04f;    // rad
+const float REFERENCE_ANGLE = -0.05f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -102,6 +102,8 @@ volatile bool rotationLeftMode  = false;  // ◀️ held?
 volatile bool rotationRightMode = false;  // ▶️ held?
 
 volatile float  h_webDesired       = 0.0f;
+
+const float H_DEAD = 0.1;
 
 
 /* ─────────────────────── TELEMETRY JSON ─────────────────────── */
@@ -405,30 +407,30 @@ void handleCmd() {
 
   String a = server.arg("act");
   /* ---- START commands ---- */
+
+  float w1      = step1.getPositionRad();
+  float w2      = step2.getPositionRad();
+  float heading = (w1 - w2);
+
+  float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
+
   if (a == "up_start") {
-    // grab the current centre‐position of the two wheels
-    float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
-    // bump the desired set-point 15 radians ahead
     g_webDesired = pos + 15.0f;
   }
   else if (a == "down_start") {
-    float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
     g_webDesired = pos - 15.0f;
   }
   else if (a == "left_start")  {
-
-    float w1      = step1.getPositionRad();
-    float w2      = step2.getPositionRad();
-    float heading = (w1 - w2);
-    
     h_webDesired = heading - ROT_OFFSET;
   }
   else if (a == "right_start") {
-    float w1      = step1.getPositionRad();
-    float w2      = step2.getPositionRad();
-    float heading = (w1 - w2);
-    
     h_webDesired = heading + ROT_OFFSET;
+  }
+  else if (a == "right_stop" || a == "left_stop") {
+    h_webDesired = heading;
+  }
+  else if (a == "down_stop" || a == "down_stop") {
+    g_webDesired = pos;
   }
   else {
     server.send(400, "text/plain", "Unknown command");
@@ -599,6 +601,12 @@ void loop() {
       float errRot = desiredHeading - heading;
 
       rotCorrection = Kp_rot * errRot;
+
+      if (abs(errRot) < H_DEAD ){
+
+        rotCorrection = rotCorrection * abs(errRot);
+
+      }
 
 
       step1.setTargetSpeedRad(uout + rotCorrection);
