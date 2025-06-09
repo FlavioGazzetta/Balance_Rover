@@ -101,6 +101,8 @@ volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
 volatile bool rotationLeftMode  = false;  // ◀️ held?
 volatile bool rotationRightMode = false;  // ▶️ held?
 
+volatile float  h_webDesired       = 0.0f;
+
 
 /* ─────────────────────── TELEMETRY JSON ─────────────────────── */
 // We will rebuild this JSON each time in diagnostics:
@@ -413,22 +415,20 @@ void handleCmd() {
     float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
     g_webDesired = pos - 15.0f;
   }
-  else if (a == "up_stop" || a == "down_stop") {
-   
-  }
   else if (a == "left_start")  {
-    rotationLeftMode  = true;
-    rotationRightMode = false;
-  }
-  else if (a == "left_stop")   {
-    rotationLeftMode  = false;
+
+    float w1      = step1.getPositionRad();
+    float w2      = step2.getPositionRad();
+    float heading = (w1 - w2);
+    
+    h_webDesired = heading - ROT_OFFSET;
   }
   else if (a == "right_start") {
-    rotationRightMode = true;
-    rotationLeftMode  = false;
-  }
-  else if (a == "right_stop")  {
-    rotationRightMode = false;
+    float w1      = step1.getPositionRad();
+    float w2      = step2.getPositionRad();
+    float heading = (w1 - w2);
+    
+    h_webDesired = heading + ROT_OFFSET;
   }
   else {
     server.send(400, "text/plain", "Unknown command");
@@ -591,16 +591,13 @@ void loop() {
       
       float w1      = step1.getPositionRad();
       float w2      = step2.getPositionRad();
-      float heading = 0.5f * (w1 - w2);
+      float heading = (w1 - w2);
 
-      // 2) while ◀/▶ held, set-point = heading ± small offset
-      if      (rotationRightMode) desiredHeading = heading + ROT_OFFSET;
-      else if (rotationLeftMode)  desiredHeading = heading - ROT_OFFSET;
+      desiredHeading = h_webDesired;
 
       // 3) P-control
       float errRot = desiredHeading - heading;
-      if (errRot >  PI) errRot -= 2*PI;
-      if (errRot < -PI) errRot += 2*PI;
+
       rotCorrection = Kp_rot * errRot;
 
 
@@ -608,9 +605,6 @@ void loop() {
       step2.setTargetSpeedRad(uout - rotCorrection);
       // (Auto‐sync PI on speed difference could go here)
 
-      
-
-      
     }
   }
 
@@ -698,7 +692,7 @@ void loop() {
     float w1pos      = step1.getPositionRad();
     float w2pos      = step2.getPositionRad();
     float centerPos  = 0.5f * (w1pos + w2pos);
-    float heading    = 0.5f * (w1pos - w2pos);
+    float heading    = (w1pos - w2pos);
 
     // 2) Other telemetry
     float sp1        = step1.getSpeedRad();
