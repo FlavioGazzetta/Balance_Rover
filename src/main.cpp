@@ -37,7 +37,7 @@ const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.04f;    // rad
+const float REFERENCE_ANGLE = -0.035f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -427,10 +427,10 @@ void handleCmd() {
   float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
 
   if (a == "up_start") {
-    g_webDesired = pos + 15.0f;
+    g_webDesired = pos - 15.0f;
   }
   else if (a == "down_start") {
-    g_webDesired = pos - 15.0f;
+    g_webDesired = pos + 15.0f;
   }
   else if (a == "left_start")  {
     h_webDesired = spinComp - ROT_OFFSET;
