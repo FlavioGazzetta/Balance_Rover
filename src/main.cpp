@@ -16,7 +16,19 @@
 #include <Adafruit_Sensor.h>
 #include <step.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <WiFiUdp.h>          //  ← you didn’t include this
+#include <math.h>
+
+
+const char* ssid = "cole";
+const char* password = "abcabcabc";
+
+WiFiUDP udp;
+const int  UDP_PORT = 8888;
+
+char udpBuf[32];              // temp buffer for the ASCII number
+int  xCam = 0;                // latest horizontal offset
+
 
 /* ─────────────────────────── PIN MAP ─────────────────────────── */
 const int STEPPER1_DIR_PIN   = 16;
@@ -77,8 +89,6 @@ Adafruit_MPU6050 mpu;
 step             step1(STEPPER_INTERVAL_US, STEPPER1_STEP_PIN, STEPPER1_DIR_PIN);
 step             step2(STEPPER_INTERVAL_US, STEPPER2_STEP_PIN, STEPPER2_DIR_PIN);
 
-/* ───────────────────────── WEB SERVER ────────────────────────── */
-WebServer server(80);
 
 /* ──────────────────── STATE / SHARED FLAGS ───────────────────── */
 volatile float  g_webDesired       = 0.0f;   // numeric set‐point from Wi-Fi
@@ -121,342 +131,6 @@ volatile float spinRate = 0;
 volatile float dt = 0;
 
 
-/* ─────────────────────── TELEMETRY JSON ─────────────────────── */
-// We will rebuild this JSON each time in diagnostics:
-String statusJSON = "{}";
-
-
-/* ─────────────────────── HTML HOMEPAGE ───────────────────────── */
-const char HOMEPAGE[] PROGMEM = R"====(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta
-  name="viewport"
-  content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover"
-    />
-<title>Balance-Bot Controller</title>
-
-<!-- ——————  minimal styles for a clean table —————— -->
-<style>
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: #f4f5f7;
-    display: flex;
-    justify-content: center;
-    padding: 20px;
-  }
-  .card {
-    background: #ffffff;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-    max-width: 500px;
-    width: 100%;
-    padding: 20px;
-  }
-  h1 {
-    margin: 0;
-    font-size: 1.4rem;
-    text-align: center;
-    color: #333;
-  }
-  .pad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(3, 1fr);
-    gap: 12px;
-    justify-items: center;
-    align-items: center;
-    margin: 20px 0;
-  }
-  .pad button {
-    width: 60px;
-    height: 60px;
-    border: none;
-    font-size: 1.2rem;
-    font-weight: 600;
-    border-radius: 50%;
-    background: #e0e2e5;
-    color: #333;
-    cursor: pointer;
-    transition: background .1s, transform .1s;
-    user-select: none;          /* disable text selection */
-    -webkit-user-select: none;  /* Safari/Chrome */
-    -moz-user-select: none;     /* Firefox */
-  }
-  .pad button:active,
-  .pad button.pressed {
-    background: #3f51b5;
-    color: #fff;
-    transform: scale(0.96);
-  }
-  form {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    text-align: center;
-    margin-bottom: 20px;
-  }
-  input[type=number] {
-    padding: 8px;
-    border: 1px solid #ccc;
-    border-radius: 8px;
-    width: 100px;
-    margin: 0 auto;
-    font-size: 1rem;
-    text-align: center;
-  }
-  input[type=submit] {
-    padding: 10px 0;
-    border: none;
-    border-radius: 8px;
-    background: #3f51b5;
-    color: #fff;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background .1s;
-  }
-  input[type=submit]:hover {
-    background: #303f9f;
-  }
-  /* Telemetry table */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 10px;
-  }
-  th, td {
-    padding: 8px 6px;
-    text-align: left;
-    border-bottom: 1px solid #ddd;
-  }
-  th {
-    background: #f1f3f7;
-    color: #444;
-    font-weight: 600;
-  }
-  td.value {
-    font-weight: 500;
-    color: #222;
-  }
-</style>
-
-<!-- ——————  logic for binding buttons + fetching telemetry —————— -->
-<script>
-  function send(cmd) {
-    fetch("/cmd?act=" + cmd);
-  }
-
-  function bind(id, start, stop) {
-    const el = document.getElementById(id);
-    let rpt = null;
-    const down = (e) => {
-      e.preventDefault();
-      el.classList.add("pressed");
-      send(start);
-      rpt = setInterval(() => send(start), 200);
-    };
-    const up = (e) => {
-      e.preventDefault();
-      el.classList.remove("pressed");
-      clearInterval(rpt);
-      rpt = null;
-      send(stop);
-    };
-    el.addEventListener("pointerdown", down, { passive: false });
-    ["pointerup", "pointercancel", "pointerleave"].forEach((ev) =>
-      el.addEventListener(ev, up, { passive: false })
-    );
-  }
-
-  window.addEventListener("load", () => {
-    // 1) Bind the arrow‐buttons
-    bind("up", "up_start", "up_stop");
-    bind("down", "down_start", "down_stop");
-    bind("left", "left_start", "left_stop");
-    bind("right", "right_start", "right_stop");
-
-    // 2) Every 500 ms, fetch /status and update the telemetry table
-    setInterval(async () => {
-      try {
-        const resp = await fetch("/status");
-        if (!resp.ok) return;
-        const data = await resp.json();
-        document.getElementById("tiltSP").innerText   = data.tiltSP.toFixed(3);
-        document.getElementById("theta").innerText    = data.theta.toFixed(3);
-        document.getElementById("posEst").innerText   = data.posEst.toFixed(3);
-        document.getElementById("w1pos").innerText    = data.w1pos.toFixed(3);
-        document.getElementById("w2pos").innerText    = data.w2pos.toFixed(3);
-        document.getElementById("sp1").innerText      = data.sp1.toFixed(3);
-        document.getElementById("sp2").innerText      = data.sp2.toFixed(3);
-        document.getElementById("desPos").innerText   = data.desPos.toFixed(3);
-        document.getElementById("L").innerText        = data.L;
-        document.getElementById("R").innerText        = data.R;
-        document.getElementById("diff").innerText     = data.diff.toFixed(3);
-        document.getElementById("manual").innerText   = data.manual;
-        document.getElementById("fallen").innerText   = data.fallen;
-        document.getElementById("heading").innerText = data.heading.toFixed(3);
-        document.getElementById("desHeading").innerText = data.desiredHeading.toFixed(3);
-        document.getElementById("avgSpeed").innerText   = data.avgSpeed.toFixed(3);
-      } catch (e) {
-        // ignore transient errors
-      }
-    }, 500);
-
-    // 3) Set up the “Submit” handler (outside of bind())
-    const posForm  = document.getElementById("posForm");
-    const posInput = document.getElementById("posInput");
-    const posAck   = document.getElementById("posAck");
-
-    posForm.addEventListener("submit", async (e) => {
-      e.preventDefault();               // prevent page reload
-      const v = posInput.value;         // read the new set‐point
-      try {
-        const resp = await fetch("/set?val=" + encodeURIComponent(v));
-        if (resp.ok) {
-          posAck.innerText = "✔︎";      // success
-          setTimeout(() => { posAck.innerText = ""; }, 1000);
-        } else {
-          posAck.innerText = "✘";      // error
-          setTimeout(() => { posAck.innerText = ""; }, 1500);
-        }
-      } catch (err) {
-        posAck.innerText = "✘";        // network failure
-        setTimeout(() => { posAck.innerText = ""; }, 1500);
-      }
-    });
-  });
-</script>
-
-</head>
-
-<body>
-  <div class="card">
-    <h1>Balance-Bot Remote Controller</h1>
-
-    <!-- ───── control pad ───── -->
-    <div class="pad">
-      <div></div>
-      <button id="up">↑</button>
-      <div></div>
-
-      <button id="left">←</button>
-      <div></div>
-      <button id="right">→</button>
-
-      <div></div>
-      <button id="down">↓</button>
-      <div></div>
-    </div>
-
-    <!-- ───── numeric set-point ───── -->
-    <form id="posForm">
-      <label>
-        Desired position:
-        <input id="posInput" type="number" step="0.01" name="val" value="0.00">
-      </label>
-      <input type="submit" value="Submit">
-      <span id="posAck" style="margin-left:8px; color:green; font-size:0.9em;"></span>
-    </form>
-
-    <!-- ───── telemetry table ───── -->
-    <table>
-      <thead>
-        <tr>
-          <th>Parameter</th>
-          <th>Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>tiltSP</td>   <td class="value" id="tiltSP">0.000</td></tr>
-        <tr><td>θ (theta)</td> <td class="value" id="theta">0.000</td></tr>
-        <tr><td>posEst</td>   <td class="value" id="posEst">0.000</td></tr>
-        <tr><td>w1pos</td>    <td class="value" id="w1pos">0.000</td></tr>
-        <tr><td>w2pos</td>    <td class="value" id="w2pos">0.000</td></tr>
-        <tr><td>sp1</td>      <td class="value" id="sp1">0.000</td></tr>
-        <tr><td>sp2</td>      <td class="value" id="sp2">0.000</td></tr>
-        <tr><td>desPos</td>   <td class="value" id="desPos">0.000</td></tr>
-        <tr><td>LeftMode</td> <td class="value" id="L">0</td></tr>
-        <tr><td>RightMode</td><td class="value" id="R">0</td></tr>
-        <tr><td>diff</td>     <td class="value" id="diff">0.000</td></tr>
-        <tr><td>manual</td>   <td class="value" id="manual">0</td></tr>
-        <tr><td>fallen</td>   <td class="value" id="fallen">0</td></tr>
-        <tr><td>heading (rad)</td><td class="value" id="heading">0.000</td></tr>
-        <tr><td>desiredHeading (rad)</td><td class="value" id="desHeading">0.000</td></tr>
-        <tr><td>avgSpeed</td>   <td class="value" id="avgSpeed">0.000</td></tr>
-      </tbody>
-    </table>
-  </div>
-</body>
-</html>
-)====";
-
-/* ─────────────────── ROUTE HANDLERS ─────────────────────────── */
-void handleRoot() {
-  server.send_P(200, "text/html", HOMEPAGE);
-}
-
-void handleSet() {
-  if (server.hasArg("val")) {
-    g_webDesired = server.arg("val").toFloat();
-    String resp = "Received: " + server.arg("val") + "<br><a href='/'>Back</a>";
-    server.send(200, "text/html", resp);
-  } else {
-    server.send(400, "text/plain", "Bad Request");
-  }
-}
-
-void handleCmd() {
-  if (!server.hasArg("act")) {
-    server.send(400, "text/plain", "Bad Request");
-    return;
-  }
-  if (fallen) {
-    // If already fallen, ignore new drive commands
-    server.send(200, "text/plain", "Ignored – robot has fallen");
-    return;
-  }
-
-  String a = server.arg("act");
-  /* ---- START commands ---- */
-
-
-  float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
-
-  if (a == "up_start") {
-    g_webDesired = pos - 15.0f;
-  }
-  else if (a == "down_start") {
-    g_webDesired = pos + 15.0f;
-  }
-  else if (a == "left_start")  {
-    h_webDesired = spinComp - ROT_OFFSET;
-  }
-  else if (a == "right_start") {
-    h_webDesired = spinComp + ROT_OFFSET;
-  }
-  else if (a == "right_stop" || a == "left_stop") {
-    h_webDesired = spinComp;
-  }
-  else if (a == "down_stop" || a == "down_stop") {
-    g_webDesired = pos;
-  }
-  else {
-    server.send(400, "text/plain", "Unknown command");
-    return;
-  }
-
-  server.send(200, "text/plain", "OK");
-}
-
-// Returns latest telemetry as JSON
-void handleStatus() {
-  server.send(200, "application/json", statusJSON);
-}
-
 /* ───────────────────── STEPPER TIMER ISR ─────────────────────── */
 bool IRAM_ATTR TimerHandler(void*) {
   static bool tog = false;
@@ -471,19 +145,19 @@ bool IRAM_ATTR TimerHandler(void*) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("=== ESP32 Balance-Bot v3.2 (Web Telemetry) ===");
+  Serial.println("=== ESP32 Balance-Bot v3.2 (UDP follower) ===");
 
-  /* Wi-Fi AP */
-  WiFi.softAP("ESP32_BalanceBot", "12345678");
-  Serial.print("Connect to http://");
-  Serial.println(WiFi.softAPIP());
+  /* ─── Wi-Fi STATION ─── */
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(400);
+    Serial.print('.');
+  }
+  Serial.print("\nConnected!  IP = ");
+  Serial.println(WiFi.localIP());
 
-  /* Web routes */
-  server.on("/",       handleRoot);
-  server.on("/set",    handleSet);
-  server.on("/cmd",    handleCmd);
-  server.on("/status", handleStatus);
-  server.begin();
+  udp.begin(UDP_PORT);           // start listening
 
   /* Hardware init */
   pinMode(TOGGLE_PIN, OUTPUT);
@@ -512,7 +186,26 @@ void setup() {
 /* ────────────────────────── MAIN LOOP ───────────────────────── */
 void loop() {
   unsigned long now = millis();
-  server.handleClient();  // handle web requests
+  int pktsz = udp.parsePacket();
+  
+  if (pktsz) {
+  int n = udp.read(udpBuf, sizeof(udpBuf) - 1);
+  if (n > 0) {
+    udpBuf[n] = '\0';
+    xCam = atoi(udpBuf);       // e.g. “-247”, “193”
+  }
+
+  Serial.printf("UDP buf=\"%s\"  xCam=%d  bytes=%d\n", udpBuf, xCam, pktsz);
+
+  /*  ─── heading set-point logic ───
+      +160 …  319  → turn left  (negative offset)
+      -160 … +159  → keep heading
+      -319 … -161 → turn right (positive offset)               */
+  if      (xCam > 165)       h_webDesired = spinComp - ROT_OFFSET;
+  else if (xCam < 155)       h_webDesired = spinComp + ROT_OFFSET;
+  else                       h_webDesired = spinComp;
+}
+
 
 
   /* --------------- INNER LOOP (20 ms) ---------------- */
@@ -708,8 +401,6 @@ void loop() {
     float w1pos      = step1.getPositionRad();
     float w2pos      = step2.getPositionRad();
     float centerPos  = 0.5f * (w1pos + w2pos);
-    float heading = spinComp;
-    float desiredHeading = h_webDesired;
 
     // 2) Other telemetry
     float sp1        = step1.getSpeedRad();
@@ -727,30 +418,10 @@ void loop() {
       "posEst %.3f | w1pos %.3f | w2pos %.3f | sp1 %.3f | sp2 %.3f | "
       "desPos %.3f | L %d | R %d | diff %.3f | manual:%d | fallen:%d | "
       "avgSpeed:%.3f | Roll %.3f | pitch %.3f\n",
-      tiltSP, theta, heading, desiredHeading,
+      tiltSP, theta, spinComp, h_webDesired,
       centerPos, w1pos, w2pos, sp1, sp2,
       desiredOut, Lm, Rm, diffSp, mMode, fFlag, avgSpeed, gyro_z, gyro_y
     );
-
-    // 4) Build JSON for /status, including desiredHeading
-    statusJSON = "{";
-    statusJSON += "\"tiltSP\":"        + String(tiltSP, 3)        + ",";
-    statusJSON += "\"theta\":"         + String(theta, 3)         + ",";
-    statusJSON += "\"heading\":"       + String(heading, 3)       + ",";
-    statusJSON += "\"desiredHeading\":" + String(desiredHeading, 3)+ ",";
-    statusJSON += "\"posEst\":"        + String(centerPos, 3)     + ",";
-    statusJSON += "\"w1pos\":"         + String(w1pos, 3)         + ",";
-    statusJSON += "\"w2pos\":"         + String(w2pos, 3)         + ",";
-    statusJSON += "\"sp1\":"           + String(sp1, 3)           + ",";
-    statusJSON += "\"sp2\":"           + String(sp2, 3)           + ",";
-    statusJSON += "\"desPos\":"        + String(desiredOut, 3)    + ",";
-    statusJSON += "\"L\":"             + String(Lm)               + ",";
-    statusJSON += "\"R\":"             + String(Rm)               + ",";
-    statusJSON += "\"diff\":"          + String(diffSp, 3)        + ",";
-    statusJSON += "\"manual\":"        + String(mMode)            + ",";
-    statusJSON += "\"fallen\":"        + String(fFlag)            + ",";
-    statusJSON += "\"avgSpeed\":"      + String(avgSpeed, 3);
-    statusJSON += "}";
   }
 
 }
