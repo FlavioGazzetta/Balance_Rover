@@ -37,12 +37,14 @@ const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.05f;    // rad
+const float REFERENCE_ANGLE = -0.04f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
 const float GYRO_SPIKE_THRESHOLD  = 0.2f;     // rad/s
 const float Kd_BOOST_FACTOR       = 100.0f;
+
+
 
 // outer (position) loop gain
 const float ANGLE_CONSTRAINT = 0.025;
@@ -50,17 +52,12 @@ const float ANGLE_CONSTRAINT = 0.025;
 /* ───────────────────── MANUAL‐DRIVE CONSTANTS ────────────────── */
 const float TILT_MANUAL = 1.0f;
 const float TILT_ANGLE  = 0.015f;
-const float SPIN_SPEED  = 3.0f;  // rad/s wheel‐against‐wheel
 
 
-const float ROT_OFFSET = 1.0f;  // rad  (≈8.4°)
-const float MAX_ROTATION_OFFSET = 0.1;
+const float ROT_OFFSET = 0.5f;  // rad  (≈8.4°)
 
-static unsigned long rotationT      = 0;
-const  unsigned long ROT_INTERVAL   = 200;     // ms
-static float          prevHeading    = 0.0f;   // last heading (rad)
 static float          desiredHeading = 0.0f;   // set‐point
-const  float          Kp_rot         = 2.0f;   // P‐gain
+const  float          Kp_rot         = 0.1f;   // P‐gain
 
 /* ─────────────────────────────────────────────────────────────────
    ───────────────────────────────────────────────────────────────── */
@@ -101,6 +98,27 @@ volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
 volatile float  h_webDesired       = 0.0f;
 
 const float H_DEAD = 0.9;
+
+static unsigned long lastMicrosHeading = 0;
+
+
+volatile float spinComp      = 0.0f;
+volatile float prev_spinComp = 0.0f;
+volatile float prev_spinErr  = 0.0f;
+volatile float spinIntegral  = 0.0f;
+
+// spin‐PID gains
+const float tp = 2.0f;
+const float td = 0.5f;
+const float ti = 0.1f;
+
+volatile float spinErr = 0;
+
+volatile float spinDeriv = 0;
+
+volatile float spinRate = 0;
+
+volatile float dt = 0;
 
 
 /* ─────────────────────── TELEMETRY JSON ─────────────────────── */
@@ -405,9 +423,6 @@ void handleCmd() {
   String a = server.arg("act");
   /* ---- START commands ---- */
 
-  float w1      = step1.getPositionRad();
-  float w2      = step2.getPositionRad();
-  float heading = (w1 - w2);
 
   float pos = 0.5f * (step1.getPositionRad() + step2.getPositionRad());
 
@@ -418,13 +433,13 @@ void handleCmd() {
     g_webDesired = pos - 15.0f;
   }
   else if (a == "left_start")  {
-    h_webDesired = heading - ROT_OFFSET;
+    h_webDesired = spinComp - ROT_OFFSET;
   }
   else if (a == "right_start") {
-    h_webDesired = heading + ROT_OFFSET;
+    h_webDesired = spinComp + ROT_OFFSET;
   }
   else if (a == "right_stop" || a == "left_stop") {
-    h_webDesired = heading;
+    h_webDesired = spinComp;
   }
   else if (a == "down_stop" || a == "down_stop") {
     g_webDesired = pos;
@@ -475,6 +490,7 @@ void setup() {
   pinMode(STEPPER_EN_PIN, OUTPUT);
   digitalWrite(STEPPER_EN_PIN, LOW);
 
+
   if (!mpu.begin()) {
     Serial.println("MPU6050 not detected! Halt.");
     while (1) delay(10);
@@ -493,8 +509,6 @@ void setup() {
 
 }
 
-float rotCorrection = 0;
-
 /* ────────────────────────── MAIN LOOP ───────────────────────── */
 void loop() {
   unsigned long now = millis();
@@ -505,6 +519,8 @@ void loop() {
   static unsigned long prevTime = now, innerT = 0;
   static float theta = 0.0f, integral = 0.0f, uout = 0.0f;
   static float tilt_acc_z = 0.0f, gyro_y = 0.0f, err_inner = 0.0f;
+
+  static float  gyro_z = 0;
 
   /* sync PI integrator */
   static float syncInt = 0.0f;
@@ -541,12 +557,16 @@ void loop() {
     // 3) IMU reading & complementary filter
     sensors_event_t a, g, tmp;
     mpu.getEvent(&a, &g, &tmp);
+    
     tilt_acc_z = atan2(a.acceleration.z, a.acceleration.x);
-    gyro_y     = g.gyro.y;
+    gyro_y     = g.gyro.pitch;
 
-    float dt = (now - prevTime) / 1000.0f;  // in seconds
+
+    dt = (now - prevTime) / 1000.0f;  // in seconds
     prevTime = now;
     theta = (1.0f - c) * tilt_acc_z + c * (theta + gyro_y * dt);
+
+    spinRate = g.gyro.roll + 0.031; 
 
     // ─── FALL DETECTION & RECOVERY ─────────────────────────────────
     if (!fallen && fabsf(theta) > FALL_THRESHOLD) {
@@ -581,27 +601,25 @@ void loop() {
       step2.setTargetSpeedRad(0);
     }
     else {  // Straight‐line auto‐sync / “balance” mode
-      
-      float w1      = step1.getPositionRad();
-      float w2      = step2.getPositionRad();
-      float heading = (w1 - w2);
+        
+        spinComp      = prev_spinComp + spinRate * dt;
+        prev_spinComp = spinComp;
 
-      desiredHeading = h_webDesired;
+        // 2) PID on heading (turn_reference set elsewhere)
+        spinErr   = h_webDesired - spinComp;
+        spinDeriv = (spinErr - prev_spinErr) / dt;
+        spinIntegral  += spinErr * dt;
 
-      // 3) P-control
-      float errRot = desiredHeading - heading;
+        float Pto       = tp * spinErr;
+        float Dto       = td * spinDeriv;
+        float Ito       = ti * spinIntegral;
+        float turnDrive = Pto + Dto + Ito;
 
-      rotCorrection = Kp_rot * errRot;
+        prev_spinErr = spinErr;
 
-      if (abs(errRot) < H_DEAD ){
-
-        rotCorrection = rotCorrection * abs(errRot) * abs(errRot);
-
-      }
-
-      step1.setTargetSpeedRad(uout + rotCorrection);
-      step2.setTargetSpeedRad(uout - rotCorrection);
-      // (Auto‐sync PI on speed difference could go here)
+        // 3) Mix into your wheel commands alongside the balance‐drive (uout):
+        step1.setTargetSpeedRad( uout  - turnDrive );
+        step2.setTargetSpeedRad( uout  + turnDrive );
 
     }
   }
@@ -690,7 +708,8 @@ void loop() {
     float w1pos      = step1.getPositionRad();
     float w2pos      = step2.getPositionRad();
     float centerPos  = 0.5f * (w1pos + w2pos);
-    float heading    = (w1pos - w2pos);
+    float heading = spinComp;
+    float desiredHeading = h_webDesired;
 
     // 2) Other telemetry
     float sp1        = step1.getSpeedRad();
@@ -707,10 +726,10 @@ void loop() {
       "tiltSP %.3f | θ %.3f | heading %.3f | desiredHeading %.3f | "
       "posEst %.3f | w1pos %.3f | w2pos %.3f | sp1 %.3f | sp2 %.3f | "
       "desPos %.3f | L %d | R %d | diff %.3f | manual:%d | fallen:%d | "
-      "avgSpeed:%.3f\n",
+      "avgSpeed:%.3f | Roll %.3f | pitch %.3f\n",
       tiltSP, theta, heading, desiredHeading,
       centerPos, w1pos, w2pos, sp1, sp2,
-      desiredOut, Lm, Rm, diffSp, mMode, fFlag, avgSpeed
+      desiredOut, Lm, Rm, diffSp, mMode, fFlag, avgSpeed, gyro_z, gyro_y
     );
 
     // 4) Build JSON for /status, including desiredHeading
