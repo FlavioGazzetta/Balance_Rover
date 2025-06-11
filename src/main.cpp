@@ -232,7 +232,7 @@ if (!useFake) {
       if (fakeStep >= 360) fakeStep -= 360;
 
       float phase = fakeStep * TWO_PI / 360.0f;   // 0 … 2π
-      xCam    = 160 + (int)(60.0f * sinf(phase)); // 100 … 220
+      xCam    = 160 + (int)(160.0f * sinf(phase)); // 100 … 220
       areaCam = 10000.0f + 2500.0f * sinf(phase); // (unchanged example)
 
       Serial.printf("FAKE x=%d  area=%.0f\n", xCam, areaCam);
@@ -271,7 +271,7 @@ if (!useFake) {
 
     static const float MAX_CORR = 0.6f;          // ≈ ±34 °
     int   xCamCentered = xCam - 160;   
-    float deltaYaw     = -tan(xCamCentered*PI/180);
+    float deltaYaw     = ((xCamCentered/5.33333333333333334)*(PI/180));
     h_webDesired = deltaYaw;          // 
 
     // 1) Determine angle setpoint (reference) based on manual vs. auto
