@@ -16,7 +16,7 @@
 #include <Adafruit_Sensor.h>
 #include <step.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>          //  ← you didn’t include this
+#include <WiFiUdp.h>          
 #include <math.h>
 
 
@@ -28,6 +28,14 @@ const int  UDP_PORT = 8888;
 
 char udpBuf[32];              // temp buffer for the ASCII number
 int  xCam = 0;                // latest horizontal offset
+
+/* -------- camera intrinsics -------- */
+const int   IMG_W      = 320;     // pixels
+const float HFOV_deg   = 60.0;   // horizontal FOV of your lens
+
+// focal length expressed in *pixels*:
+const float FOCAL_PX = IMG_W / (2.0f * tan(HFOV_deg * 0.5f * M_PI / 180.0));
+// → ≈ 277 px for 320-wide & 60° lens
 
 
 /* ─────────────────────────── PIN MAP ─────────────────────────── */
@@ -131,6 +139,14 @@ volatile float spinRate = 0;
 volatile float dt = 0;
 
 
+/* ---------- fallback-simulation control ---------- */
+bool   useFake    = false;          // true ⇢ Wi-Fi failed, run simulator
+float  areaCam    = 0;              // fake / real area value
+unsigned long lastFakeMs = 0;       // timestamp of last fake sample
+int    fakeStep   = 0;              // advances 1 step / sec
+
+
+
 /* ───────────────────── STEPPER TIMER ISR ─────────────────────── */
 bool IRAM_ATTR TimerHandler(void*) {
   static bool tog = false;
@@ -147,17 +163,23 @@ void setup() {
   delay(200);
   Serial.println("=== ESP32 Balance-Bot v3.2 (UDP follower) ===");
 
-  /* ─── Wi-Fi STATION ─── */
+  unsigned long t0 = millis();
   WiFi.begin(ssid, password);
   Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 3000.0) {
     delay(400);
     Serial.print('.');
   }
-  Serial.print("\nConnected!  IP = ");
-  Serial.println(WiFi.localIP());
 
-  udp.begin(UDP_PORT);           // start listening
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("\nConnected!  IP = ");
+    Serial.println(WiFi.localIP());
+    udp.begin(UDP_PORT);                 // start UDP only if Wi-Fi OK
+  } else {
+    Serial.println("\n*** Wi-Fi failed – entering FAKE SENSOR MODE ***");
+    useFake = true;
+  }
+
 
   /* Hardware init */
   pinMode(TOGGLE_PIN, OUTPUT);
@@ -184,28 +206,39 @@ void setup() {
 }
 
 /* ────────────────────────── MAIN LOOP ───────────────────────── */
-void loop() {
-  unsigned long now = millis();
+void loop() {  
+  /* ---------- sensor input: real UDP or fake ---------- */
+unsigned long now = millis();
+
+if (!useFake) {
+  /* ------------ REAL UDP branch ------------ */
   int pktsz = udp.parsePacket();
-  
   if (pktsz) {
-  int n = udp.read(udpBuf, sizeof(udpBuf) - 1);
-  if (n > 0) {
-    udpBuf[n] = '\0';
-    xCam = atoi(udpBuf);       // e.g. “-247”, “193”
+    int n = udp.read(udpBuf, sizeof(udpBuf) - 1);
+    if (n > 0) {
+      udpBuf[n] = '\0';
+      // Expected payload:  "x area"   e.g. "147 13250"
+      xCam    = atoi(strtok(udpBuf, " "));
+      areaCam = atof(strtok(nullptr, " "));
+    }
+    Serial.printf("UDP  x=%d  area=%.0f  (%d bytes)\n", xCam, areaCam, pktsz);
+  }
+} else {
+  /* ------------ FAKE branch (1 sample / s) ------------ */
+  /* ------------ FAKE branch (10 samples / s) ------------ */
+  if (now - lastFakeMs >= 100) {          // 100 ms period  → 10 Hz update
+      lastFakeMs = now;
+      fakeStep  += 5;                    // 12° per tick → full cycle in 30 steps
+      if (fakeStep >= 360) fakeStep -= 360;
+
+      float phase = fakeStep * TWO_PI / 360.0f;   // 0 … 2π
+      xCam    = 160 + (int)(60.0f * sinf(phase)); // 100 … 220
+      areaCam = 10000.0f + 2500.0f * sinf(phase); // (unchanged example)
+
+      Serial.printf("FAKE x=%d  area=%.0f\n", xCam, areaCam);
   }
 
-  Serial.printf("UDP buf=\"%s\"  xCam=%d  bytes=%d\n", udpBuf, xCam, pktsz);
-
-  /*  ─── heading set-point logic ───
-      +160 …  319  → turn left  (negative offset)
-      -160 … +159  → keep heading
-      -319 … -161 → turn right (positive offset)               */
-  if      (xCam > 165)       h_webDesired = spinComp - ROT_OFFSET;
-  else if (xCam < 155)       h_webDesired = spinComp + ROT_OFFSET;
-  else                       h_webDesired = spinComp;
 }
-
 
 
   /* --------------- INNER LOOP (20 ms) ---------------- */
@@ -236,6 +269,11 @@ void loop() {
   if (now - innerT >= INNER_INTERVAL) {
     innerT += INNER_INTERVAL;
 
+    static const float MAX_CORR = 0.6f;          // ≈ ±34 °
+    int   xCamCentered = xCam - 160;   
+    float deltaYaw     = -tan(xCamCentered*PI/180);
+    h_webDesired = deltaYaw;          // 
+
     // 1) Determine angle setpoint (reference) based on manual vs. auto
     if (manualMode) {
       ref = REFERENCE_ANGLE + manualTiltOffset;
@@ -259,7 +297,7 @@ void loop() {
     prevTime = now;
     theta = (1.0f - c) * tilt_acc_z + c * (theta + gyro_y * dt);
 
-    spinRate = g.gyro.roll + 0.031; 
+    spinRate = g.gyro.roll + 0.0208; 
 
     // ─── FALL DETECTION & RECOVERY ─────────────────────────────────
     if (!fallen && fabsf(theta) > FALL_THRESHOLD) {
