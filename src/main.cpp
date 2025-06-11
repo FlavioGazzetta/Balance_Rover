@@ -57,7 +57,7 @@ const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.035f;    // rad
+const float REFERENCE_ANGLE = -0.045f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -232,8 +232,8 @@ if (!useFake) {
       if (fakeStep >= 360) fakeStep -= 360;
 
       float phase = fakeStep * TWO_PI / 360.0f;   // 0 … 2π
-      xCam    = 160 + (int)(160.0f * sinf(phase)); // 100 … 220
-      areaCam = 10000.0f + 2500.0f * sinf(phase); // (unchanged example)
+      xCam    = 160 + (int)(160.0f * sinf(phase)); 
+      areaCam = 40960.0f + 30000.0f * sinf(phase); // (unchanged example)
 
       Serial.printf("FAKE x=%d  area=%.0f\n", xCam, areaCam);
   }
@@ -272,7 +272,9 @@ if (!useFake) {
     static const float MAX_CORR = 0.6f;          // ≈ ±34 °
     int   xCamCentered = xCam - 160;   
     float deltaYaw     = ((xCamCentered/5.33333333333333334)*(PI/180));
-    h_webDesired = deltaYaw;          // 
+    h_webDesired = deltaYaw;          
+
+    
 
     // 1) Determine angle setpoint (reference) based on manual vs. auto
     if (manualMode) {
@@ -324,6 +326,10 @@ if (!useFake) {
     SumSpeed += 0.5f * (sp1_meas + sp2_meas);
 
     avgSpeed = SumSpeed/speedcount;
+
+    float areapercent = areaCam / 102400;
+
+    g_webDesired = (areapercent - 0.4) * 200;
 
     /* ----- DRIVE WHEELS BASED ON MODE (unless fallen) ----- */
     if (fallen) {
@@ -379,9 +385,6 @@ if (!useFake) {
     if (fallen) {
       // If fallen, lock tiltSP to zero so motors stay off
       tiltSP = 0;
-    }
-    else if (manualMode) {
-      tiltSP = 0;  // override in manual mode
     }
     else {
       float desired = g_webDesired;
