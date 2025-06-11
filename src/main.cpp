@@ -109,7 +109,6 @@ volatile bool   wheelLeftMode      = false;  // ← held?
 volatile bool   wheelRightMode     = false;  // → held?
 
 volatile bool   freezePosition     = false;  // “hold here” flag
-volatile float  freezePositionPos  = 0.0f;   // latched position (rad)
 
 volatile float  g_positionEstimate = 0.0f;   // shared with /cmd (not used now)
 
@@ -120,8 +119,8 @@ const float H_DEAD = 0.9;
 static unsigned long lastMicrosHeading = 0;
 
 
-volatile float spinComp      = 0.0f;
-volatile float prev_spinComp = 0.0f;
+volatile float rotpos      = 0.0f;
+volatile float prev_rotpos = 0.0f;
 volatile float prev_spinErr  = 0.0f;
 volatile float spinIntegral  = 0.0f;
 
@@ -339,24 +338,24 @@ if (!useFake) {
     }
     else {  // Straight‐line auto‐sync / “balance” mode
         
-        spinComp      = prev_spinComp + spinRate * dt;
-        prev_spinComp = spinComp;
+        rotpos      = prev_rotpos + spinRate * dt;
+        prev_rotpos = rotpos;
 
         // 2) PID on heading (turn_reference set elsewhere)
-        spinErr   = h_webDesired - spinComp;
+        spinErr   = h_webDesired - rotpos;
         spinDeriv = (spinErr - prev_spinErr) / dt;
         spinIntegral  += spinErr * dt;
 
-        float Pto       = tp * spinErr;
-        float Dto       = td * spinDeriv;
-        float Ito       = ti * spinIntegral;
-        float turnDrive = Pto + Dto + Ito;
+        float Prot       = tp * spinErr;
+        float Drot       = td * spinDeriv;
+        float Irot       = ti * spinIntegral;
+        float rotvel = Prot + Drot + Irot;
 
         prev_spinErr = spinErr;
 
         // 3) Mix into your wheel commands alongside the balance‐drive (uout):
-        step1.setTargetSpeedRad( uout  - turnDrive );
-        step2.setTargetSpeedRad( uout  + turnDrive );
+        step1.setTargetSpeedRad( uout  - rotvel );
+        step2.setTargetSpeedRad( uout  + rotvel );
 
     }
   }
@@ -373,13 +372,6 @@ if (!useFake) {
     float wheel1PosRad = step1.getPositionRad();
     float wheel2PosRad = step2.getPositionRad();
     float posEst = 0.5f * (wheel1PosRad + wheel2PosRad);
-
-    // 2) If we just left manual mode, latch freezePositionPos:
-    if (!manualMode && freezePosition) {
-      // Once we drop out of manual, hold wherever we were
-      freezePositionPos = posEst;
-      // Keep freezePosition = true until user sets a new setpoint
-    }
 
     // 3) Compute tiltSP based on manual vs. position control
     if (fallen) {
@@ -459,7 +451,7 @@ if (!useFake) {
       "posEst %.3f | w1pos %.3f | w2pos %.3f | sp1 %.3f | sp2 %.3f | "
       "desPos %.3f | L %d | R %d | diff %.3f | manual:%d | fallen:%d | "
       "avgSpeed:%.3f | Roll %.3f | pitch %.3f\n",
-      tiltSP, theta, spinComp, h_webDesired,
+      tiltSP, theta, rotpos, h_webDesired,
       centerPos, w1pos, w2pos, sp1, sp2,
       desiredOut, Lm, Rm, diffSp, mMode, fFlag, avgSpeed, gyro_z, gyro_y
     );
