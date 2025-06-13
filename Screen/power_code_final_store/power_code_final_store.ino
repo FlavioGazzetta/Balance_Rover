@@ -81,7 +81,7 @@ void setup()
   Serial.begin(9600);
 
   // I²C on default DevKit pins (SDA 21, SCL 22)
-  Wire.begin(21, 22);
+  Wire.begin(25, 26);
   display.begin();
   display.setFont(u8g2_font_6x12_tr);
 
@@ -102,7 +102,7 @@ void loop()
   float Vmotor = readVolts(PIN_VMOTOR);
 
   /* ---- currents ---- */
-  float Ilogic = ((Vlogic - 0.9f) / 510.0f) / 0.01f;
+  float Ilogic = ((Vlogic - 0.88f) / 510.0f) / 0.01f;
   float Imotor = ((Vmotor - 1.27f) / 100.0f) / 0.01f;
   Ilogic = max(0.0f, Ilogic);
   Imotor = max(0.0f, Imotor);
@@ -121,9 +121,14 @@ void loop()
 
   /* ---- print currents to terminal ---- */
   Serial.print("Ilogic: ");
-  Serial.print(Ilogic, 3);
+  Serial.print(Ilogic, 5);
   Serial.print(" A    Imotor: ");
-  Serial.print(Imotor, 3);
+  Serial.print(Imotor, 5);
+  Serial.println(" V");
+  Serial.print("Vlogic: ");
+  Serial.print(Vlogic, 3);
+  Serial.print(" V    Vmotor: ");
+  Serial.print(Vmotor, 3);
   Serial.println(" A");
 
   /* ============ DRAW ============ */
@@ -149,9 +154,9 @@ void loop()
 
   // small Vlogic / Vmotor readout (optional)
   char vBuf[16];
-  snprintf(vBuf, sizeof(vBuf), "Vl=%.2fV", Vlogic);
+  snprintf(vBuf, sizeof(vBuf), "Vl=%.5fV", Vlogic);
   display.drawStr(px, 42, vBuf);
-  snprintf(vBuf, sizeof(vBuf), "Vm=%.2fV", Vmotor);
+  snprintf(vBuf, sizeof(vBuf), "Vm=%.5fV", Vmotor);
   display.drawStr(px, 54, vBuf);
 
   display.sendBuffer();

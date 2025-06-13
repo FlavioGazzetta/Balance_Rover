@@ -1,0 +1,9 @@
+--Rpi--
+
+python3 pi_client.py
+
+ffplay -fflags nobuffer -flags low_delay udp://@:1236
+
+--powershell--
+
+PS C:\Users\User> ffmpeg -f dshow -video_size 640x480 -framerate 30 -i video="Integrated Webcam" -c:v libx264 -preset ultrafast -tune zerolatency -g 30 -b:v 800k -pix_fmt yuv420p -x264-params repeat-headers=1 -f mpegts udp://172.20.10.2:1234?pkt_size=1316
