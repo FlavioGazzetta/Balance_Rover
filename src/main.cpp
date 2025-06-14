@@ -20,8 +20,8 @@
 #include <math.h>
 
 
-const char* ssid = "cole";
-const char* password = "abcabcabc";
+const char* ssid = "Flavio_iPhone";
+const char* password = "motoistop";
 
 WiFiUDP udp;
 const int  UDP_PORT = 8888;
@@ -159,16 +159,21 @@ bool IRAM_ATTR TimerHandler(void*) {
 /* ────────────────────────── SETUP ────────────────────────────── */
 void setup() {
   Serial.begin(115200);
+  
   delay(200);
   Serial.println("=== ESP32 Balance-Bot v3.2 (UDP follower) ===");
 
   unsigned long t0 = millis();
   WiFi.begin(ssid, password);
   Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 3000.0) {
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000.0) {
     delay(400);
     Serial.print('.');
   }
+
+  Serial.println();
+  Serial.print("Wi-Fi connected, IP = ");
+  Serial.println(WiFi.localIP()); 
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("\nConnected!  IP = ");
