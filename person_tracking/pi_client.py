@@ -1,79 +1,80 @@
-#!/usr/bin/env python3
 """
-pi_client.py – Pi 3 A+ thin client
-• receives raw H.264 on UDP 1234 from the laptop
-• sends 320×240 JPEG thumbs to the laptop (tcp://SERVER_IP:5555)
-• receives bounding-box JSON (tcp://SERVER_IP:5556)
-• draws rectangles (scaled to full 640×480)
-• optional: restreams annotated video on UDP 1236
+pi_client.py – Pi Camera v2.1 client via Picamera2
+• Captures 640×480@30fps with Picamera2/libcamera
+• Sends 320×240 JPEG thumbs → server (tcp://SERVER_IP:5555)
+• Receives boxes ← server (tcp://SERVER_IP:5556)
+• Draws and displays locally with OpenCV
 """
 
-import cv2, zmq, struct, time, threading, subprocess, atexit, sys
+import sys, time, struct, threading, zmq
 from turbojpeg import TurboJPEG
+from picamera2 import Picamera2, Preview
+import cv2, atexit, subprocess
+
+# --- UPDATE THIS ONLY ---
+SERVER_IP     = "172.20.10.4"
+JPEG_W, JPEG_H = 320, 240
+CAP_W,  CAP_H  = 640, 480
+FPS            = 15
+# ------------------------
+
+# fast JPEG encoder
 J = TurboJPEG()
 
-# ---------- edit these two lines only -----------------
-SERVER_IP = "172.20.10.4"               # laptop address
-SRC_URL   = "udp://0.0.0.0:1234?fifo_size=1000000&overrun_nonfatal=1&loglevel=error"
-# ------------------------------------------------------
-
-JPEG_W, JPEG_H, FPS = 320, 240, 15
-OUT_PORT           = 1236               # Pi restreams annotated video here
-OUT_SIZE           = (640, 480)         # matches the incoming webcam
-
+# ZMQ sockets
 ctx  = zmq.Context()
 push = ctx.socket(zmq.PUSH); push.connect(f"tcp://{SERVER_IP}:5555")
 sub  = ctx.socket(zmq.SUB);  sub.connect(f"tcp://{SERVER_IP}:5556")
 sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
-boxes = []                               # shared list updated in background
+boxes = []
 def recv_loop():
     global boxes
     while True:
         try:
             boxes = sub.recv_json()["boxes"]
-        except Exception:
+        except:
             pass
+
 threading.Thread(target=recv_loop, daemon=True).start()
 
-cap = cv2.VideoCapture(SRC_URL, cv2.CAP_FFMPEG)
-if not cap.isOpened():
-    sys.exit(f"❌ cannot open stream {SRC_URL}")
+# ---- Picamera2 setup ----
+picam2 = Picamera2()
+preview_config = picam2.create_preview_configuration(
+    main={"size": (CAP_W, CAP_H), "format":"RGB888"})
+picam2.configure(preview_config)
+picam2.start()
+atexit.register(picam2.stop)
 
-# --- FFmpeg restream for viewing elsewhere ---------------------------
-ff = subprocess.Popen([
-    "ffmpeg","-loglevel","error","-f","rawvideo","-pixel_format","bgr24",
-    "-video_size",f"{OUT_SIZE[0]}x{OUT_SIZE[1]}","-framerate","30","-i","-",
-    "-c:v","libx264","-preset","ultrafast","-tune","zerolatency",
-    "-g","30","-pix_fmt","yuv420p","-f","mpegts",
-    f"udp://0.0.0.0:{OUT_PORT}?pkt_size=1316"
-], stdin=subprocess.PIPE)
-atexit.register(lambda: ff.stdin.close() or ff.wait())
-# ---------------------------------------------------------------------
+# ---- optional: display window ----
+cv2.namedWindow("Pi-3 live", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Pi-3 live", CAP_W, CAP_H)
 
 last = 0.0
-scale_x = OUT_SIZE[0] / JPEG_W          # 640 / 320 = 2
-scale_y = OUT_SIZE[1] / JPEG_H          # 480 / 240 = 2
+scale_x = CAP_W / JPEG_W
+scale_y = CAP_H / JPEG_H
 
-print("🎥  Pi client running – forwarding frames to server …", flush=True)
+print("🎥  PiCam2 client started – sending thumbs to server …", flush=True)
 
 while True:
-    ok, frame = cap.read()
-    if not ok:
-        continue
+    frame = picam2.capture_array()             # RGB888
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-    t = time.time()
-    if t - last >= 1 / FPS:
+    now = time.time()
+    if now - last >= 1 / FPS:
         thumb = cv2.resize(frame, (JPEG_W, JPEG_H))
-        push.send(struct.pack("<d", t) + J.encode(thumb, quality=70))
-        last = t
+        push.send(struct.pack("<d", now) + J.encode(thumb, quality=70))
+        last = now
 
-    # draw latest boxes (scaled to full 640×480)
-    for x1, y1, x2, y2, sc in boxes:
-        x1, x2 = int(x1 * scale_x), int(x2 * scale_x)
-        y1, y2 = int(y1 * scale_y), int(y2 * scale_y)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(frame, f"{sc:.2f}", (x1, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    # draw boxes
+    for x1,y1,x2,y2,conf in boxes:
+        x1,x2 = int(x1*scale_x), int(x2*scale_x)
+        y1,y2 = int(y1*scale_y), int(y2*scale_y)
+        cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
+        cv2.putText(frame,f"{conf:.2f}",(x1,y1-4),
+                    cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
 
-    ff.stdin.write(frame.tobytes())      # ship to UDP 1236
+    # display locally
+    cv2.imshow("Pi-3 live", frame)
+    if cv2.waitKey(1)&0xFF==27:
+        break
