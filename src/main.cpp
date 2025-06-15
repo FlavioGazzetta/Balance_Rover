@@ -57,7 +57,7 @@ const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.045f;    // rad
+const float REFERENCE_ANGLE = -0.047f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -166,7 +166,7 @@ void setup() {
   unsigned long t0 = millis();
   WiFi.begin(ssid, password);
   Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000.0) {
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 100000.0) {
     delay(400);
     Serial.print('.');
   }
@@ -225,7 +225,7 @@ if (!useFake) {
       xCam    = atoi(strtok(udpBuf, " "));
       areaCam = atof(strtok(nullptr, " "));
     }
-    Serial.printf("UDP  x=%d  area=%.0f  (%d bytes)\n", xCam, areaCam, pktsz);
+    //Serial.printf("UDP  x=%d  area=%.0f  (%d bytes)\n", xCam, areaCam, pktsz);
   }
 } else {
   /* ------------ FAKE branch (1 sample / s) ------------ */
@@ -273,19 +273,15 @@ if (!useFake) {
   if (now - innerT >= INNER_INTERVAL) {
     innerT += INNER_INTERVAL;
 
-    static const float MAX_CORR = 0.6f;          // ≈ ±34 °
-    int   xCamCentered = xCam - 160;   
-    float deltaYaw     = ((xCamCentered/5.33333333333333334)*(PI/180));
-    h_webDesired = deltaYaw;          
+    int   xCamCentered = xCam - 640;   
+    float deltaYaw     = -((xCamCentered/30.0)*(PI/180));
+    h_webDesired = rotpos + deltaYaw;          
 
     
 
     // 1) Determine angle setpoint (reference) based on manual vs. auto
-    if (manualMode) {
-      ref = REFERENCE_ANGLE + manualTiltOffset;
-    } else {
-      ref = REFERENCE_ANGLE;
-    }
+    ref = REFERENCE_ANGLE;
+    
 
     // 2) Read wheel speeds (rad/s)
     float sp1_meas = step1.getSpeedRad();
@@ -303,7 +299,7 @@ if (!useFake) {
     prevTime = now;
     theta = (1.0f - c) * tilt_acc_z + c * (theta + gyro_y * dt);
 
-    spinRate = g.gyro.roll + 0.0208; 
+    spinRate = g.gyro.roll + 0.020; 
 
     // ─── FALL DETECTION & RECOVERY ─────────────────────────────────
     if (!fallen && fabsf(theta) > FALL_THRESHOLD) {
@@ -331,9 +327,13 @@ if (!useFake) {
 
     avgSpeed = SumSpeed/speedcount;
 
-    float areapercent = areaCam / 102400;
+    float areapercent = areaCam / 1228800;
 
-    g_webDesired = (areapercent - 0.4) * 200;
+    float wheel1PosRad = step1.getPositionRad();
+    float wheel2PosRad = step2.getPositionRad();
+    float posEst = 0.5f * (wheel1PosRad + wheel2PosRad);
+
+    g_webDesired = posEst + (areapercent - 0.6) * 200;
 
     /* ----- DRIVE WHEELS BASED ON MODE (unless fallen) ----- */
     if (fallen) {
