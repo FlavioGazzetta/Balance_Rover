@@ -57,7 +57,7 @@ const float Kp_inner        = 2000.0f;
 const float Ki_inner        =    1.0f;
 const float Kd_inner        =  200.0f;
 const float c               =  0.96f;     // complementary‐filter coefficient
-const float REFERENCE_ANGLE = -0.047f;    // rad
+const float REFERENCE_ANGLE = -0.045f;    // rad
 
 // Kd boost thresholds
 const float ERROR_SMALL_THRESHOLD = 0.005f;   // rad
@@ -125,9 +125,9 @@ volatile float prev_spinErr  = 0.0f;
 volatile float spinIntegral  = 0.0f;
 
 // spin‐PID gains
-const float tp = 2.0f;
-const float td = 0.5f;
-const float ti = 0.1f;
+const float rp = 2.0f;
+const float rd = 0.5f;
+const float ri = 0.1f;
 
 volatile float spinErr = 0;
 
@@ -166,7 +166,7 @@ void setup() {
   unsigned long t0 = millis();
   WiFi.begin(ssid, password);
   Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 100000.0) {
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 1000.0) {
     delay(400);
     Serial.print('.');
   }
@@ -273,9 +273,7 @@ if (!useFake) {
   if (now - innerT >= INNER_INTERVAL) {
     innerT += INNER_INTERVAL;
 
-    int   xCamCentered = xCam - 640;   
-    float deltaYaw     = -((xCamCentered/30.0)*(PI/180));
-    h_webDesired = rotpos + deltaYaw;          
+            
 
     
 
@@ -349,11 +347,11 @@ if (!useFake) {
         // 2) PID on heading (turn_reference set elsewhere)
         spinErr   = h_webDesired - rotpos;
         spinDeriv = (spinErr - prev_spinErr) / dt;
-        spinIntegral  += spinErr * dt;
+        spinIntegral += spinErr * dt;
 
-        float Prot       = tp * spinErr;
-        float Drot       = td * spinDeriv;
-        float Irot       = ti * spinIntegral;
+        float Prot       = rp * spinErr;
+        float Drot       = rd * spinDeriv;
+        float Irot       = ri * spinIntegral;
         float rotvel = Prot + Drot + Irot;
 
         prev_spinErr = spinErr;
@@ -387,45 +385,27 @@ if (!useFake) {
       float desired = g_webDesired;
       float posErr  = desired - posEst;
       float absErr  = fabsf(posErr);
-      float mult = 1;
       float Kp = 0;
       if(abs(posErr) > POSERRLIMIT){
 
         if(posErr < 0){
-
           Kp = (-0.05)/(2);
-
         }else{
-
           Kp = 0.05;
-
         }
-
         tiltSP = -constrain((Kp/abs(avgSpeed)), -ANGLE_CONSTRAINT/2, ANGLE_CONSTRAINT);
-
-
       }
       else if (absErr > POSERRSLOWLIMIT) {
-
         if(posErr < 0){
-
           Kp = (-0.025)/(2);
-
         }else{
-
           Kp = 0.025;
-
         }
-
         tiltSP = -constrain((Kp/abs(avgSpeed) * ((abs(posErr)-5)/10)), -ANGLE_CONSTRAINT/2, ANGLE_CONSTRAINT);
-
         }
       else{
-
         tiltSP = 0;
-
       }
-      
     }
 
     avgSpeed = 0;
