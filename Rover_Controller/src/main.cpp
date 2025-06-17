@@ -272,11 +272,12 @@ if (!useFake) {
   /* ~~~~~~~~~~~~~ INNER CONTROL LOOP ~~~~~~~~~~~~~ */
   if (now - innerT >= INNER_INTERVAL) {
     innerT += INNER_INTERVAL;
-            
-    int xCamCentered = xCam- 640;
-    float deltaYaw = =-((xCamCentered / 32.667f) * (PI/180.0f));
-    h_webDesired = rotpos + deltaYaw;
-    
+
+    int   xCamCentered = xCam - 640;   
+    float deltaYaw     = -((xCamCentered/32.6667)*(PI/180));
+    h_webDesired = rotpos + deltaYaw;             
+
+
     // 1) Determine angle setpoint (reference) based on manual vs. auto
     ref = REFERENCE_ANGLE;
     
