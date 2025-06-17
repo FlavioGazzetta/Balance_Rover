@@ -1,12 +1,8 @@
 #define CAMERA_MODEL_ESP32S3_EYE
 #define BUTTON_PIN    0
-#define I2S_DOUT      21
+#define I2S_DOUT      48
 #define I2S_BCLK      47
 #define I2S_LRC       3
-#define PIN1          41
-#define PIN2          42
-#define PIN3          2
-#define PIN4          1
 
 #include "esp_camera.h"
 #include "camera_pins.h"
@@ -24,7 +20,9 @@
 #include <esp_now.h>
 #include <string.h>
 #include <Arduino.h>
+#include <HardwareSerial.h>
 
+HardwareSerial gy39Serial(2);
 uint8_t slaveMac[6] = { 0xE8, 0x68, 0xE7, 0x31, 0x0E, 0x50 };
 const char* ssid = "cole";
 const char* password = "abcabcabc";
@@ -32,6 +30,11 @@ AsyncWebServer server(80);
 AsyncWebSocket wss("/ws");
 int currentMode = 2;
 Audio audio;
+
+unsigned long lastQueryTime = 0;
+unsigned long lastTempQueryTime = 0;
+const unsigned long queryInterval = 3000;
+const unsigned long tempQueryInterval = 1500;
 
 struct {
   float latitude;
@@ -76,6 +79,52 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
     }
   }
 }
+
+void initGY39() {
+  gy39Serial.begin(9600, SERIAL_8N1, 20, 21);  // DR, CR
+  delay(500);
+  uint8_t configCmd1[] = {0xA5, 0x83, 0x28};
+  gy39Serial.write(configCmd1, 3);
+  delay(300);
+  Serial.println("GY-39 初始化完成");
+}
+
+void updateSensorDataFromGY39() {
+  uint8_t queryTempCmd[] = {0xA5, 0x52, 0xF7};
+  gy39Serial.write(queryTempCmd, 3);
+  delay(300);
+
+  uint8_t buffer[20];
+  int len = 0;
+  unsigned long startTime = millis();
+  while (millis() - startTime < 500 && len < 20) {
+    if (gy39Serial.available()) {
+      buffer[len++] = gy39Serial.read();
+    }
+  }
+
+  if (len >= 14 && buffer[0] == 0x5A && buffer[1] == 0x5A && buffer[2] == 0x45) {
+    uint16_t temp = (buffer[4] << 8) | buffer[5];
+    float temperature = temp / 100.0;
+
+    uint16_t hum = (buffer[10] << 8) | buffer[11];
+    float humidity = hum / 100.0;
+
+    sensorData.temperature = temperature;
+    sensorData.humidity = humidity;
+    sensorData.hasValidLocation = true;
+
+  } else {
+    Serial.print("GY-39 无效数据: ");
+    for (int i = 0; i < len; i++) {
+        if (buffer[i] < 0x10) Serial.print("0");
+        Serial.print(buffer[i], HEX);
+        Serial.print(" ");
+    }
+    Serial.println();
+  }
+}
+
 /*
 int cameraSetup(void) {
   camera_config_t config;
@@ -204,33 +253,28 @@ void camera_task(void *parameter) {
     }
   }
 }
+*/
 
 void audio_task(void *parameter) {
   while (1) {
     audio.loop();
   }
 }
-*/
 
 void track() {
-  Serial.println("[MODE] Person Following");
 }
 
 void weather() {
-  Serial.println("[MODE] Weather");
-  sensorData.hasValidLocation = true;
+  updateSensorDataFromGY39();
   sensorData.latitude = 114.36;
   sensorData.longitude = 30.54;
-  sensorData.temperature = 37;
-  sensorData.humidity = 70;
+
 }
 
 void remote() {
-  Serial.println("[MODE] Remote Control");
 }
 
 void chat() {
-  Serial.println("[MODE] Talking");
 }
 
 void setup() {
@@ -243,6 +287,10 @@ void setup() {
   }
   Serial.println("");
   Serial.println("WiFi connected");
+
+  sdmmcInit();
+  listDir(SD_MMC, "/", 1);
+  initGY39();
   
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error init ESP-NOW");
@@ -279,7 +327,7 @@ void setup() {
   server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
     request->send(200, "text/plain", "File received");
   }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-    static File uploadFile;
+  static File uploadFile;
     if (index == 0) {
       String path = "/" + filename;
       Serial.printf("Upload Start: %s\n", path.c_str());
@@ -313,11 +361,10 @@ void setup() {
   });
   server.begin();
 
-  sdmmcInit();
-  /*
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
   audio.setVolume(21); // default 0...21
-  audio.connecttohost("http://192.168.10.142:5000/download");
+  //audio.connecttoFS(SD_MMC, "/camera/response.wav");
+  /*
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   ws2812Init();
   if (cameraSetup()==1) {
@@ -327,8 +374,9 @@ void setup() {
   }
   xTaskCreatePinnedToCore(movement_task, "movement", 2048, NULL, 3, NULL, 1);
   xTaskCreatePinnedToCore(camera_task, "camera", 10000, NULL, 3, NULL, 1);
-  xTaskCreatePinnedToCore(audio_task, "audio", 10000, NULL, 3, NULL, 1);
   */
+  xTaskCreatePinnedToCore(audio_task, "audio", 10000, NULL, 3, NULL, 1);
+  
 }
 
 void loop() {
@@ -348,6 +396,4 @@ void loop() {
     default:
       weather();
   }
-
-  delay(5000); // Simulate periodic work and avoid log spamming
 }
