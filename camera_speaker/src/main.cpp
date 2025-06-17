@@ -52,8 +52,12 @@ typedef struct __attribute__((packed)) {
 
 Packet txPkt;
 
-void onMaserSend(const uint8_t*, esp_now_send_status_t status) {
+void onMasterSend(const uint8_t*, esp_now_send_status_t status) {
   Serial.printf("ESP-NOW send: %s\n", status==ESP_NOW_SEND_SUCCESS ? "OK":"FAIL");
+}
+
+void onMasterRecv(const uint8_t*, const uint8_t* d, int len){
+  Serial.printf("Received");
 }
 
 void handleJoystick(const String& cmd) {
@@ -275,11 +279,15 @@ void remote() {
 }
 
 void chat() {
+  while (1) {
+    audio.loop();
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   Serial.println();
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -294,8 +302,10 @@ void setup() {
   
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error init ESP-NOW");
+    while(1) delay(1);
   }
-  esp_now_register_send_cb(onMaserSend);
+  esp_now_register_send_cb(onMasterSend);
+  esp_now_register_recv_cb(onMasterRecv);
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, slaveMac, 6);
   peerInfo.channel = 0;
@@ -362,8 +372,9 @@ void setup() {
   server.begin();
 
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolume(21); // default 0...21
-  //audio.connecttoFS(SD_MMC, "/camera/response.wav");
+  audio.setVolume(5); // default 0...21
+  audio.connecttoFS(SD_MMC, "/response_quiet.mp3");
+  //audio.connecttohost("longfei.store:8000/api/cart/");
   /*
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   ws2812Init();
@@ -375,11 +386,11 @@ void setup() {
   xTaskCreatePinnedToCore(movement_task, "movement", 2048, NULL, 3, NULL, 1);
   xTaskCreatePinnedToCore(camera_task, "camera", 10000, NULL, 3, NULL, 1);
   */
-  xTaskCreatePinnedToCore(audio_task, "audio", 10000, NULL, 3, NULL, 1);
-  
+  //xTaskCreatePinnedToCore(audio_task, "audio", 10000, NULL, 3, NULL, 1);
 }
 
 void loop() {
+  /*
   switch (currentMode) {
     case 1:
       track();
@@ -396,4 +407,6 @@ void loop() {
     default:
       weather();
   }
+  */
+  audio.loop();
 }
