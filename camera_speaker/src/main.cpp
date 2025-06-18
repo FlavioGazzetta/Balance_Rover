@@ -21,6 +21,8 @@
 #include <string.h>
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <esp_wifi.h>      // for esp_wifi_set_channel()
+#include <esp_now.h>
 
 HardwareSerial gy39Serial(2);
 uint8_t slaveMac[6] = { 0xE8, 0x68, 0xE7, 0x31, 0x0E, 0x50 };
@@ -287,7 +289,7 @@ void chat() {
 void setup() {
   Serial.begin(115200);
   Serial.println();
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -295,6 +297,9 @@ void setup() {
   }
   Serial.println("");
   Serial.println("WiFi connected");
+
+  uint8_t chan = WiFi.channel();
+  Serial.printf("Using channel %d for ESP-NOW\n", chan);
 
   sdmmcInit();
   listDir(SD_MMC, "/", 1);
@@ -304,11 +309,12 @@ void setup() {
     Serial.println("Error init ESP-NOW");
     while(1) delay(1);
   }
+  
   esp_now_register_send_cb(onMasterSend);
   esp_now_register_recv_cb(onMasterRecv);
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, slaveMac, 6);
-  peerInfo.channel = 0;
+  peerInfo.channel = chan;
   peerInfo.encrypt = false;
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add ESP-NOW peer");
@@ -408,5 +414,4 @@ void loop() {
       weather();
   }
   */
-  audio.loop();
 }
