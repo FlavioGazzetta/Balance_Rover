@@ -183,7 +183,7 @@ void setup()
   const char* ssid = "cole";
   const char* password = "abcabcabc";
 
-  WiFi.mode(WIFI_STA);                    // puts radio in station mode
+  WiFi.mode(WIFI_AP_STA);                    // puts radio in station mode
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -217,7 +217,6 @@ void setup()
   step2.setAccelerationRad(30.0f);
 
   /* ESP-NOW init */
-  WiFi.mode(WIFI_STA);
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed"); while (1) delay(1);
   }

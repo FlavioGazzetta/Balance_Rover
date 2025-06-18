@@ -65,9 +65,9 @@ unsigned long t_prev_ms = 0;
 // loop timing 
 const unsigned long LOOP_MS = 1000;
 
-const int   PIN_VLOGIC = 39;   
-const int   PIN_VMOTOR = 34;  
-const int   PIN_VBAT = 35;  
+const int   PIN_VLOGIC = 4;   
+const int   PIN_VMOTOR = 5;  
+const int   PIN_VBAT = 6;  
 const float VREF       = 3.3f; 
 const float DIV_RATIO = 0.25f;    
 const float ADC_MAX    = 4095.0f;
