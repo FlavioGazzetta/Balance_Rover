@@ -9,8 +9,9 @@
 #include "ws2812.h"
 #include "Base64.h"
 #include "sd_read_write.h"
-#include "freertos/FreeRTOS.h"
+#include <freertos/FreeRTOS.h>
 #include "freertos/task.h"
+#include <freertos/semphr.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include "Audio.h"
@@ -23,6 +24,7 @@
 #include <HardwareSerial.h>
 #include <esp_wifi.h>      // for esp_wifi_set_channel()
 #include <esp_now.h>
+#include <Wire.h>
 
 HardwareSerial gy39Serial(2);
 uint8_t slaveMac[6] = { 0xE8, 0x68, 0xE7, 0x31, 0x0E, 0x50 };
@@ -53,6 +55,57 @@ typedef struct __attribute__((packed)) {
 } Packet;
 
 Packet txPkt;
+const float C_nom_Ah = 2.0f;
+float SoC      = 100.0f;
+float Qused_Ah = 0.0f;
+float I_prev   = NAN;
+unsigned long t_prev_ms = 0;
+
+
+// loop timing 
+const unsigned long LOOP_MS = 1000;
+
+const int   PIN_VLOGIC = 39;   
+const int   PIN_VMOTOR = 34;  
+const int   PIN_VBAT = 35;  
+const float VREF       = 3.3f; 
+const float DIV_RATIO = 0.25f;    
+const float ADC_MAX    = 4095.0f;
+
+inline float readVolts(int pin)
+{
+  return analogRead(pin) / ADC_MAX * VREF;
+}
+
+const int   N_TAB = 26;
+const float V_TAB[N_TAB] = {
+  14.880f, 14.340f, 13.800f, 13.500f, 13.200f, 13.104f,
+  13.020f, 12.960f, 12.900f, 12.840f, 12.780f, 12.744f,
+  12.720f, 12.684f, 12.660f, 12.660f, 12.660f, 12.504f,
+  12.360f, 12.180f, 12.000f, 11.640f, 11.280f, 10.860f,
+  10.440f,  9.600f
+};
+
+const float SOC_TAB[N_TAB] = {
+ 100.0f,  96.0f,  92.0f,  88.0f,  84.0f,  80.0f,
+  76.0f,  72.0f,  68.0f,  64.0f,  60.0f,  56.0f,
+  52.0f,  48.0f,  44.0f,  40.0f,  36.0f,  32.0f,
+  28.0f,  24.0f,  20.0f,  16.0f,  12.0f,   8.0f,
+   4.0f,   0.0f
+};
+
+const float R_INT_PACK = 0.12f;
+
+
+float lookupSoC(float Vocv) {
+  if (Vocv >= V_TAB[0])          return 100.0f;
+  if (Vocv <= V_TAB[N_TAB-1])    return   0.0f;
+  int i = 0;
+  // V_TAB is sorted descending
+  while (Vocv < V_TAB[i+1]) ++i;
+  float frac = (V_TAB[i] - Vocv) / (V_TAB[i] - V_TAB[i+1]);
+  return SOC_TAB[i] + frac * (SOC_TAB[i+1] - SOC_TAB[i]);
+}
 
 void onMasterSend(const uint8_t*, esp_now_send_status_t status) {
   Serial.printf("ESP-NOW send: %s\n", status==ESP_NOW_SEND_SUCCESS ? "OK":"FAIL");
@@ -261,6 +314,68 @@ void camera_task(void *parameter) {
 }
 */
 
+struct Result {
+  float P_total;
+  float SoC;
+} latestBattery;
+
+SemaphoreHandle_t resMutex;
+
+void batteryTask(void *pv) {
+  const TickType_t period = pdMS_TO_TICKS(1000);
+  for (;;) {
+    // ---- do the work you want to run forever ----
+    unsigned long now_ms = millis();
+    float dt_s  = (now_ms - t_prev_ms) / 1000.0f;
+    t_prev_ms   = now_ms;
+    float dt_h  = dt_s / 3600.0f;
+
+    /* ---- sensor voltages ---- */
+    float Vlogic = readVolts(PIN_VLOGIC);
+    float Vmotor = readVolts(PIN_VMOTOR);
+
+    /* ---- currents ---- */
+    float Ilogic = ((Vlogic - 0.606f) / 510.0f) / 0.01f;
+    float Imotor = ((Vmotor - 1.27f) / 100.0f) / 0.01f;
+    Ilogic = max(0.0f, Ilogic);
+    Imotor = max(0.0f, Imotor);
+    float I_now = Ilogic + Imotor;
+
+    /* ---- trapezoidal charge integration ---- */
+    if (!isnan(I_prev)) {
+      Qused_Ah += 0.5f * (I_prev + I_now) * dt_h;
+    }
+    I_prev = I_now;
+
+    SoC = constrain(100.0f - (Qused_Ah / C_nom_Ah * 100.0f), 0.0f, 100.0f);
+    Serial.print("SoC: ");
+    Serial.print(SoC, 1);
+    Serial.println(" %");
+
+    /* ---- total power ---- */
+    float P_total = Vlogic * Ilogic + Vmotor * Imotor;
+
+    /* ---- print currents to terminal ---- */
+    Serial.print("Ilogic: ");
+    Serial.print(Ilogic, 5);
+    Serial.print(" A    Imotor: ");
+    Serial.print(Imotor, 5);
+    Serial.println(" V");
+    Serial.print("Vlogic: ");
+    Serial.print(Vlogic, 3);
+    Serial.print(" V    Vmotor: ");
+    Serial.print(Vmotor, 3);
+    Serial.println(" A");
+    // ---- copy into the shared structure ----
+    xSemaphoreTake(resMutex, portMAX_DELAY);
+    latestBattery.P_total = P_total;
+    latestBattery.SoC     = SoC;
+    xSemaphoreGive(resMutex);
+
+    vTaskDelay(max(10UL, LOOP_MS - (millis() - now_ms)));       // ALWAYS yield → keeps other tasks happy
+  }
+}
+
 void audio_task(void *parameter) {
   while (1) {
     audio.loop();
@@ -302,7 +417,6 @@ void setup() {
   Serial.printf("Using channel %d for ESP-NOW\n", chan);
 
   sdmmcInit();
-  listDir(SD_MMC, "/", 1);
   initGY39();
   
   if (esp_now_init() != ESP_OK) {
@@ -375,18 +489,40 @@ void setup() {
     serializeJson(doc, json);
     request->send(200, "application/json", json);
   });
+  server.on("/battery", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<128> doc;
+
+    xSemaphoreTake(resMutex, portMAX_DELAY);
+    doc["power"] = latestBattery.P_total;
+    doc["percent"]    = latestBattery.SoC;
+    xSemaphoreGive(resMutex);
+
+    String payload;
+    serializeJson(doc, payload);
+    request->send(200, "application/json", payload);
+  });
   server.begin();
 
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  if (!SD_MMC.exists("/response.mp3")) {
-  Serial.println("ERROR: /response.mp3 not found!");
-} else {
-  Serial.println("Found the MP3, starting playback...");
-}
-
-  audio.setVolume(21); // default 0...21
-  audio.connecttoFS(SD_MMC, "/response.mp3");
+  audio.setVolume(10); // default 0...21
+  //audio.connecttoFS(SD_MMC, "/response.mp3");
   //audio.connecttohost("longfei.store:8000/api/cart/");
+
+  float Vadc      = readVolts(PIN_VBAT);      
+  float Vpack     = Vadc / DIV_RATIO;         
+
+  float SoC_start = lookupSoC(Vpack);  
+  Qused_Ah        = C_nom_Ah * (1.0f - SoC_start/100.0f);  
+  I_prev          = 0.0f;
+  t_prev_ms       = millis();
+  Serial.print("bat: ");
+  Serial.print(Vpack, 1);
+  
+  Serial.print("Seeded SoC at 13 V = ");
+  Serial.print(SoC_start,1);
+  Serial.println(" %");
+  resMutex = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(batteryTask, "battery", 4096, nullptr, 3, nullptr, 0);     
   /*
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   ws2812Init();
@@ -420,5 +556,5 @@ void loop() {
       weather();
   }
   */
-  audio.loop();
+  //audio.loop();
 }
