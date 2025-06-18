@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-gpu_server.py – laptop “brain” with per‐stage profiling, including Pi→server latency
-
-• pulls JPEG thumbs via ZMQ 5555 (HWM=1)
-• runs YOLOv8 (person‐only, conf 0.35)
-• profiles network/recv/decode/infer/publish/server_total/end2end latencies
-• publishes bounding‐box JSON on ZMQ 5556
+gpu_server_debug.py – ultraverbose debug on every stage:
+  • logs each ZMQ pull (size, timestamp)
+  • logs decode time & any failures
+  • logs inference boxes + confidences
+  • logs each ZMQ pub (payload size)
+  • logs end2end, per‐stage latencies
 """
 
 import zmq
@@ -14,44 +14,47 @@ import cv2
 import numpy as np
 import signal
 import sys
-import pathlib
 import time
+import pathlib
+import traceback
 from ultralytics import YOLO
 import torch
 import torch.backends.cudnn as cudnn
 
-# 1) Detect device
+# 1) Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("CUDA available:", torch.cuda.is_available())
-print("Using device:", device)
+print(f"[INIT ] CUDA available: {torch.cuda.is_available()}, device={device}")
 
-# 2) Fast JPEG decoder (TurboJPEG fallback)
+# 2) JPEG decode
 try:
     from turbojpeg import TurboJPEG
     J = TurboJPEG()
-    def jpeg_decode(buf: bytes) -> np.ndarray:
+    def jpeg_decode(buf):
         return J.decode(buf)
+    print("[INIT ] Using TurboJPEG decoder")
 except ImportError:
-    def jpeg_decode(buf: bytes) -> np.ndarray:
+    def jpeg_decode(buf):
         arr = np.frombuffer(buf, np.uint8)
         return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    print("[INIT ] Using OpenCV JPEG decoder fallback")
 
-# 3) Load YOLOv8 model (TensorRT engine if available)
-MODEL_PATH = pathlib.Path("models/yolov8n.engine"
-                          if pathlib.Path("models/yolov8n.engine").exists()
-                          else "models/yolov8n.pt")
+# 3) Load model
+MODEL_PATH = pathlib.Path("models/yolov8n.engine" if pathlib.Path("models/yolov8n.engine").exists() else "models/yolov8n.pt")
+print(f"[INIT ] Loading YOLOv8 model from {MODEL_PATH}")
 model = YOLO(str(MODEL_PATH))
 
-# 4) Optimize for inference on CUDA
+# 4) Optimize
 if device.type == "cuda":
     cudnn.benchmark = True
     model.model.to(device).eval().fuse()
+    print("[INIT ] Model fused & moved to CUDA")
 
-# 5) Warm up GPU
+# 5) Warmup
 with torch.no_grad():
     dummy = np.zeros((240, 320, 3), dtype=np.uint8)
-    for _ in range(5):
+    for i in range(5):
         _ = model(dummy, imgsz=320, conf=0.35, classes=[0], verbose=False)
+    print("[INIT ] Warmup complete")
 
 # 6) ZeroMQ setup
 ctx = zmq.Context()
@@ -65,61 +68,61 @@ pull.setsockopt(zmq.RCVHWM, 1)
 pub = ctx.socket(zmq.PUB)
 pub.bind("tcp://*:5556")
 
-print("🖥️  YOLO server ready (PULL 5555 [HWM=1], PUB 5556)  Ctrl-C to quit", flush=True)
+print("🖥️  YOLO server ready (PULL 5555 [HWM=1], PUB 5556)  Ctrl-C to quit")
+
 signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
 while True:
-    # — Stage 1: Recv (and capture Pi timestamp)
-    t0 = time.time()
-    buf = pull.recv()
-    t1 = time.time()
+    try:
+        # — RECV —
+        t0 = time.time()
+        msg = pull.recv()
+        t1 = time.time()
+        size = len(msg)
+        print(f"\n[RECV ] {size} bytes, recv_latency={(t1-t0)*1000:.1f} ms")
 
-    # Unpack Pi‐side timestamp (seconds since epoch, float)
-    ts = struct.unpack("<d", buf[:8])[0]
+        # Unpack Pi timestamp
+        ts = struct.unpack("<d", msg[:8])[0]
+        ts_local = time.localtime(ts)
+        print(f"[TS   ] Pi timestamp={ts:.6f} ({time.strftime('%H:%M:%S', ts_local)})")
 
-    # — Pi→Server network latency
-    network_ms = max((t0 - ts) * 1000, 0.0)
+        # — DECODE —
+        d0 = time.time()
+        img = jpeg_decode(msg[8:])
+        d1 = time.time()
+        if img is None:
+            print("[DECODE][ERROR] decoder returned None")
+            continue
+        h, w = img.shape[:2]
+        print(f"[DECODE] {w}×{h} decoded in {(d1-d0)*1000:.1f} ms")
 
-    # — Stage 2: Decode JPEG
-    t2 = time.time()
-    img = jpeg_decode(buf[8:])
-    t3 = time.time()
+        # — INFERENCE —
+        i0 = time.time()
+        with torch.no_grad():
+            res = model(img, imgsz=320, conf=0.35, classes=[0], verbose=False)[0]
+        i1 = time.time()
+        boxes = res.boxes.xyxy.cpu().int().tolist()
+        confs = res.boxes.conf.cpu().tolist()
+        print(f"[INFER ] {len(boxes)} boxes in {(i1-i0)*1000:.1f} ms")
+        for idx, ((x1, y1, x2, y2), c) in enumerate(zip(boxes, confs)):
+            print(f"         box#{idx}: [{x1},{y1},{x2},{y2}] conf={c:.2f}")
 
-    # — Stage 3: Inference
-    t4 = time.time()
-    with torch.no_grad():
-        res = model(img, imgsz=320, conf=0.35, classes=[0], verbose=False)[0]
-    t5 = time.time()
+        payload = [[x1, y1, x2, y2, float(c)] for (x1, y1, x2, y2), c in zip(boxes, confs)]
 
-    # Extract boxes + confidences
-    boxes = res.boxes.xyxy.cpu().int().tolist()
-    confs = res.boxes.conf.cpu().tolist()
-    payload = [[x1, y1, x2, y2, float(c)]
-               for (x1, y1, x2, y2), c in zip(boxes, confs)]
+        # — PUBLISH —
+        p0 = time.time()
+        pub.send_json({"t": ts, "boxes": payload})
+        p1 = time.time()
+        print(f"[PUBLISH] {len(payload)} boxes, json_payload_size≈{sys.getsizeof(payload)} bytes in {(p1-p0)*1000:.1f} ms")
 
-    # — Stage 4: Publish
-    t6 = time.time()
-    pub.send_json({"t": ts, "boxes": payload})
-    t7 = time.time()
+        # — PROFILING —
+        recv_ms   = (t1 - t0) * 1000
+        decode_ms = (d1 - d0) * 1000
+        infer_ms  = (i1 - i0) * 1000
+        pub_ms    = (p1 - p0) * 1000
+        total_srv = recv_ms + decode_ms + infer_ms + pub_ms
+        end2end   = max((p1 - ts) * 1000, 0.0)
+        print(f"[PROF  ] net={recv_ms:.1f} ms  dec={decode_ms:.1f} ms  inf={infer_ms:.1f} ms  pub={pub_ms:.1f} ms  srv_total={total_srv:.1f} ms  end2end={end2end:.1f} ms")
 
-    # Compute per‐stage durations
-    recv_ms    = (t1 - t0) * 1000
-    decode_ms  = (t3 - t2) * 1000
-    infer_ms   = (t5 - t4) * 1000
-    publish_ms = (t7 - t6) * 1000
-    server_total_ms = recv_ms + decode_ms + infer_ms + publish_ms
-
-    # End‐to‐end: Pi timestamp → after publish
-    end2end_ms = max((t7 - ts) * 1000, 0.0)
-
-    # Print the profiling line
-    print(
-        f"boxes={len(payload):2d}  "
-        f"net={network_ms:5.1f} ms  "
-        f"recv={recv_ms:5.1f} ms  "
-        f"decode={decode_ms:5.1f} ms  "
-        f"infer={infer_ms:5.1f} ms  "
-        f"pub={publish_ms:5.1f} ms  "
-        f"srv_total={server_total_ms:5.1f} ms  "
-        f"end2end={end2end_ms:5.1f} ms"
-    )
+    except Exception:
+        print("[ERROR ] Exception in main loop:\n" + traceback.format_exc(), file=sys.stderr)
