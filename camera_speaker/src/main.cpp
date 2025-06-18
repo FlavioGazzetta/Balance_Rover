@@ -378,8 +378,14 @@ void setup() {
   server.begin();
 
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolume(5); // default 0...21
-  audio.connecttoFS(SD_MMC, "/response_quiet.mp3");
+  if (!SD_MMC.exists("/response.mp3")) {
+  Serial.println("ERROR: /response.mp3 not found!");
+} else {
+  Serial.println("Found the MP3, starting playback...");
+}
+
+  audio.setVolume(21); // default 0...21
+  audio.connecttoFS(SD_MMC, "/response.mp3");
   //audio.connecttohost("longfei.store:8000/api/cart/");
   /*
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -414,4 +420,5 @@ void loop() {
       weather();
   }
   */
+  audio.loop();
 }
