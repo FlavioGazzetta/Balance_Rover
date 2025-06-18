@@ -1,162 +1,120 @@
 #!/usr/bin/env python3
 """
-pi_client.py — Raspberry Pi capture/transmit side (hybrid debug & resilient edition)
-──────────────────────────────────────────────────────────────────────────────
-• Captures frames from the Pi camera (Picamera2)
-• Publishes **320 × 240 JPEG thumbnails** over ZMQ PUSH→PULL to the GPU/YOLO‑Tracker server
-• Receives detection *tracks* (box + ID) over ZMQ SUB and draws them on a full‑res preview (1280 × 960)
-• Optional MJPEG /stream HTTP endpoint — streams the full 1280 × 960 view
-• Smart one‑slot FRAME_Q so the preview never piles up frames in RAM
-• Auto‑restart of the camera on *any* capture exception
-• Clean shutdown of sockets & camera on Ctrl‑C
+pi_client.py – Raspberry Pi capture/transmit side (defaults ready‑to‑run)
+────────────────────────────────────────────────────────────────────────
+Run **with no arguments at all**:
 
-🔄 **2025‑06‑18 l**  (fixed FPS cap bug, nicer stats)
-──────────────────────────────────────────────────────────────────────────────
-Default run (no CLI switches) already sends to `172.20.10.4`, JPEG 80, unlimited FPS, HWM 50, preview off.
-Override only what you need:
-```bash
-python pi_client.py --stream 8000 --rate 15 --quality 60 --hwm 100
-```
+    python3 pi_client.py
+
+That will:
+• Stream the 1280×960 boxed preview at  http://<Pi‑IP>:8000/stream
+• Rate‑limit thumbnails to 15 fps, JPEG quality 60, ZMQ HWM 100
+• Send  `xCam area`  via UDP to the ESP32 at **172.20.10.5:8888**
+
+You can still override any setting, e.g. `--esp-ip 192.168.1.42`.
 """
 
-import os, sys, signal, time, struct, threading, socket, queue, argparse, logging
-from datetime import datetime
-
-# ---------- 3rd‑party ----------
+import sys, time, struct, signal, logging, queue, threading, socket, argparse
 import cv2, zmq, numpy as np
-from flask import Flask, Response, jsonify, request, make_response
+from flask import Flask, Response
+from picamera2 import Picamera2
 
-# ---------- CLI ------------------------------------------------------
-parser = argparse.ArgumentParser(
-    description="PiCam2 client with preview & resilience + ID overlay"
-)
-parser.add_argument('--stream',     type=int,   default=0,    metavar='PORT', help='start MJPEG preview on this port (0 = disable)')
-parser.add_argument('--quality',    type=int,   default=80,   metavar='Q',    help='JPEG quality 1‑100 (both stream & thumb)')
-parser.add_argument('--rate',       type=float, default=0,    metavar='FPS',  help='thumbnail FPS cap (0 = unlimited)')
-parser.add_argument('--hwm',        type=int,   default=50,   metavar='N',    help='ZMQ SNDHWM (queue size before drops)')
-parser.add_argument('--esp-ip',     type=str,   default=None,             help='ESP32 telemetry IP (optional)')
-parser.add_argument('--esp-port',   type=int,   default=8888,             help='ESP32 UDP port')
-parser.add_argument('--server-ip',  type=str,   default='172.20.10.4',    help='YOLO‑tracker server IP')
+# ---------- CLI defaults (match user’s wish) ------------------------
+parser = argparse.ArgumentParser()
+parser.add_argument('--stream',  type=int,   default=8000,
+                    help='MJPEG preview port (0 = disabled)')
+parser.add_argument('--quality', type=int,   default=60,
+                    help='JPEG quality 1‑100 (thumb + preview)')
+parser.add_argument('--rate',    type=float, default=15,
+                    help='Thumbnail FPS cap (0 = unlimited)')
+parser.add_argument('--hwm',     type=int,   default=100,
+                    help='ZMQ SNDHWM (queue size before drops)')
+parser.add_argument('--esp-ip',  type=str,   default='172.20.10.5',
+                    help='ESP32 IP address (UDP enabled if set)')
+parser.add_argument('--esp-port', type=int,  default=8888,
+                    help='ESP32 UDP port')
+parser.add_argument('--server-ip', type=str, default='172.20.10.4',
+                    help='YOLO‑tracker server IP')
+parser.add_argument('--no-udp', action='store_true',
+                    help='Disable UDP even if esp-ip default is present')
 conflate = parser.add_mutually_exclusive_group()
-conflate.add_argument('--conflate',    dest='conflate', action='store_true',  help='keep only newest unsent frame (default)')
-conflate.add_argument('--no-conflate', dest='conflate', action='store_false', help='use regular FIFO ZMQ queue')
-parser.set_defaults(conflate=True)
+conflate.add_argument('--conflate', dest='conflate', action='store_true',
+                      help='Enable ZMQ CONFLATE (overwrite old frames)')
+conflate.add_argument('--fifo', dest='conflate', action='store_false',
+                      help='Regular FIFO ZMQ queue (default)')
+parser.set_defaults(conflate=False)
 args = parser.parse_args()
 
-JPEG_QUALITY = int(max(1, min(args.quality, 100)))
-RATE_LIMIT   = args.rate if args.rate > 0 else None   # None → unlimited
-SNDHWM       = max(1, args.hwm)
+JPEG_Q     = max(1, min(args.quality, 100))
+RATE_LIMIT = args.rate if args.rate > 0 else None
+SNDHWM     = max(1, args.hwm)
 
-# ---------- JPEG (Turbo or OpenCV fallback) --------------------------
+PREV_W, PREV_H   = 1280, 960
+THUMB_W, THUMB_H = 320, 240
+SX, SY           = PREV_W/THUMB_W, PREV_H/THUMB_H
+
+# ---------- UDP ------------------------------------------------------
+if args.no_udp or not args.esp_ip:
+    UDP_SOCK = None
+    print('[INIT] UDP disabled')
+else:
+    ESP32_ADDR = (args.esp_ip, args.esp_port)
+    UDP_SOCK   = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    print(f"[INIT] UDP → {ESP32_ADDR[0]}:{ESP32_ADDR[1]}")
+
+# ---------- JPEG encoder --------------------------------------------
 try:
     from turbojpeg import TurboJPEG, TJPF_RGB
     TJ = TurboJPEG()
-    def jpeg_encode(img, q):
-        return TJ.encode(img, quality=q, pixel_format=TJPF_RGB)
-    print("[INIT] Using TurboJPEG encoder/decoder")
+    def jpeg_encode(img):
+        return TJ.encode(img, quality=JPEG_Q, pixel_format=TJPF_RGB)
 except ImportError:
-    def jpeg_encode(img, q):
-        return cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, q])[1].tobytes()
-    print("[INIT] TurboJPEG unavailable → falling back to OpenCV JPEG")
+    def jpeg_encode(img):
+        return cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, JPEG_Q])[1].tobytes()
 
-# ---------- Helpers --------------------------------------------------
-
-def _get_ip():
-    try:
-        import netifaces as ni
-        for iface in ni.interfaces():
-            if iface == 'lo':
-                continue
-            addrs = ni.ifaddresses(iface).get(ni.AF_INET)
-            if addrs:
-                return addrs[0]['addr']
-    except Exception:
-        pass
-    return "0.0.0.0"
-
-# ---------- Constants -----------------------------------------------
-PREV_W, PREV_H   = 1280, 960            # full‑resolution preview size
-THUMB_W, THUMB_H = 320, 240             # thumbnail sent to YOLO server
-PUB_PORT, SUB_PORT = 5555, 5556
-ESP32_ADDR         = (args.esp_ip, args.esp_port) if args.esp_ip else None
-UDP_SOCK           = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if ESP32_ADDR else None
-
-# ---------------- ZMQ ------------------------------------------------
+# ---------- ZMQ ------------------------------------------------------
 ctx  = zmq.Context.instance()
 push = ctx.socket(zmq.PUSH)
 push.setsockopt(zmq.SNDHWM, SNDHWM)
 if args.conflate:
     push.setsockopt(zmq.CONFLATE, 1)
-    print("[INIT] ZMQ CONFLATE enabled — queue overwrites old frames")
-push.connect(f"tcp://{args.server_ip}:{PUB_PORT}")
+    print('[INIT] ZMQ CONFLATE on')
+push.connect(f"tcp://{args.server_ip}:5555")
 
 sub  = ctx.socket(zmq.SUB)
 sub.setsockopt(zmq.SUBSCRIBE, b"")
-sub.connect(f"tcp://{args.server_ip}:{SUB_PORT}")
-print(f"[INIT] ZMQ PUSH→{PUB_PORT}, SUB→{SUB_PORT}  HWM={SNDHWM}")
+sub.connect(f"tcp://{args.server_ip}:5556")
+print('[INIT] ZMQ ready  (PUSH 5555, SUB 5556)')
 
-# ---------------- Flask preview -------------------------------------
+# ---------- Preview server ------------------------------------------
 app = Flask(__name__)
-FRAME_Q = queue.Queue(maxsize=1)  # flush‑slot for preview JPEGs
-
-@app.before_request
-def _log_req():
-    print(f"[HTTP] {request.method} {request.path} from {request.remote_addr}")
+FRAME_Q = queue.Queue(maxsize=1)
 
 @app.route('/')
 def index():
-    return ("<html><body><h1>Pi Client</h1>"  # very tiny page
-            "<p><a href='/health'>health</a> · <a href='/test'>test</a> · <a href='/stream'>stream</a></p>"
-            "<img src='/stream' width='640'></body></html>")
-
-@app.route('/health')
-def health():
-    return jsonify(status='ok', time=time.time())
-
-@app.route('/test')
-def test():
-    if FRAME_Q.empty():
-        return "no frame yet", 503
-    img = FRAME_Q.queue[0]
-    resp = make_response(img)
-    resp.headers['Content-Type'] = 'image/jpeg'
-    resp.headers['Content-Length'] = str(len(img))
-    return resp
+    return "<img src='/stream'>"
 
 @app.route('/stream')
 def stream():
     def gen():
         while True:
             img = FRAME_Q.get()
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                   + str(len(img)).encode() + b"\r\n\r\n" + img + b"\r\n")
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + img + b"\r\n"
     return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if args.stream:
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=args.stream,
-                                            debug=False, use_reloader=False, threaded=True), daemon=True).start()
-    print(f"[HTTP] Preview: http://{_get_ip()}:{args.stream}/")
-else:
-    print("[HTTP] preview disabled")
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=args.stream, debug=False, use_reloader=False),
+                     daemon=True).start()
+    print(f"[HTTP] Preview :{args.stream}")
 
-# ---------------- Camera (auto‑restart) -----------------------------
-import picamera2
+# ---------- Camera ---------------------------------------------------
+picam = Picamera2()
+picam.configure(picam.create_preview_configuration(main={'format':'RGB888','size':(PREV_W,PREV_H)}))
+picam.start(); print('[INIT] Picamera2 started')
 
-def open_camera():
-    pc = picamera2.Picamera2()
-    conf = pc.create_preview_configuration(main={'format':'RGB888', 'size':(PREV_W, PREV_H)})
-    pc.configure(conf)
-    pc.start()
-    print("[INIT] PiCamera2 started")
-    return pc
-
-picam = open_camera()
-
-# ---------------- Shared state --------------------------------------
-cur_boxes      = []  # each element [x1,y1,x2,y2,id,conf]
+# ---------- ZMQ receive thread --------------------------------------
+cur_boxes = []
 cur_boxes_lock = threading.Lock()
-
-# ---------------- ZMQ recv thread -----------------------------------
 
 def recv_loop():
     while True:
@@ -166,96 +124,51 @@ def recv_loop():
                 cur_boxes[:] = data.get('boxes', [])
         except zmq.Again:
             time.sleep(0.002)
+threading.Thread(target=recv_loop, daemon=True).start()
 
-t_recv = threading.Thread(target=recv_loop, daemon=True); t_recv.start()
+# ---------- Main loop -----------------------------------------------
+last_thumb = last_dbg = time.time()
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
-# ---------------- Main loop -----------------------------------------
-last_stat   = time.time()
-last_thumb  = 0.0  # when we last sent a thumbnail
-sent = dropped = skipped = 0
-running = True
+while True:
+    frame = picam.capture_array('main')
+    frame[:, :, [0,2]] = frame[:, :, [2,0]]  # RGB → BGR
 
-signal.signal(signal.SIGINT, lambda *_: setattr(sys.modules[__name__], 'running', False))
-
-while running:
-    try:
-        frame = picam.capture_array('main')  # 1280×960 RGB888
-    except Exception as e:
-        logging.warning("[WARN] camera error: %s — re‑opening", e)
-        try:
-            picam.close()
-        except Exception:
-            pass
-        time.sleep(0.2)
-        picam = open_camera()
-        skipped += 1
-        continue
-
-    # ---- draw detections with ID overlay ----
+    # -------- choose selected box -----------------------------------
     with cur_boxes_lock:
-        for det in cur_boxes:
-            if len(det) == 6:
-                x1, y1, x2, y2, track_id, conf = det
-            else:  # backward‑compat 5‑tuple
-                x1, y1, x2, y2, conf = det; track_id = None
+        box = None
+        if cur_boxes:
+            ids = {b[4] for b in cur_boxes}
+            box = cur_boxes[0] if len(ids)==1 else max(cur_boxes, key=lambda b: b[-1])
 
-            sx = PREV_W / THUMB_W; sy = PREV_H / THUMB_H
-            sx1, sy1 = int(x1 * sx), int(y1 * sy)
-            sx2, sy2 = int(x2 * sx), int(y2 * sy)
-            cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
+        for x1,y1,x2,y2,tid,_ in cur_boxes:
+            cv2.rectangle(frame,(int(x1*SX),int(y1*SY)),(int(x2*SX),int(y2*SY)),(0,255,0),2)
+            cx,cy = int((x1+x2)*SX*0.5), int((y1+y2)*SY*0.5)
+            cv2.putText(frame,str(tid),(cx,cy),cv2.FONT_HERSHEY_SIMPLEX,0.55,(0,0,0),1)
 
-            if track_id is not None:
-                cx, cy = (sx1 + sx2) // 2, (sy1 + sy2) // 2
-                label = str(track_id)
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-                cv2.rectangle(frame,
-                              (cx - tw // 2 - 4, cy - th // 2 - 4),
-                              (cx + tw // 2 + 4, cy + th // 2 + 4),
-                              (0, 255, 0), -1)
-                cv2.putText(frame, label,
-                            (cx - tw // 2, cy + th // 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
-
-                if ESP32_ADDR:
-                    area = (sx2 - sx1) * (sy2 - sy1)
-                    UDP_SOCK.sendto(f"{cx} {area}".encode(), ESP32_ADDR)
-
-    now = time.time()
-    # ---- encode & send thumbnail (rate‑limited) ----
-    if RATE_LIMIT is None or (now - last_thumb) >= (1.0 / RATE_LIMIT):
-        thumb = cv2.resize(frame, (THUMB_W, THUMB_H))
-        jpg   = jpeg_encode(thumb, JPEG_QUALITY)
-        if push.poll(0, zmq.POLLOUT):
-            push.send(struct.pack('<d', now) + jpg, flags=0)
-            sent += 1
-        else:
-            dropped += 1
-        last_thumb = now
+    if box and UDP_SOCK:
+        x1,y1,x2,y2,_,_ = box
+        xCam = int((x1+x2)*0.5 * SX)
+        area = int((x2-x1)*SX * (y2-y1)*SY)
+        UDP_SOCK.sendto(f"{xCam} {area}".encode(), ESP32_ADDR)
+        print(f"[UDP] sent xCam={xCam} area={area}")
     else:
-        skipped += 1
+        if time.time()-last_dbg>1.0:
+            status = 'Waiting for detections …' if not cur_boxes else 'Detections present but none selected'
+            print(f'[DBG] {status}')
+            last_dbg = time.time()
 
-    # ---- preview ----
+    # -------- ZMQ thumbnail (rate‑limited) ---------------------------
+    now = time.time()
+    if RATE_LIMIT is None or (now - last_thumb) >= 1.0/max(RATE_LIMIT,1e-6):
+        push.send(struct.pack('<d', now) + jpeg_encode(cv2.resize(frame,(THUMB_W,THUMB_H))))
+        last_thumb = now
+
+    # -------- preview MJPEG -----------------------------------------
     if args.stream:
         try:
-            jpg_prev = jpeg_encode(frame, JPEG_QUALITY)
-            if FRAME_Q.full():
-                FRAME_Q.get_nowait()
-            FRAME_Q.put_nowait(jpg_prev)
+            jpg = jpeg_encode(frame)
+            if FRAME_Q.full(): FRAME_Q.get_nowait()
+            FRAME_Q.put_nowait(jpg)
         except Exception:
             pass
-
-    # ---- stats every 5 s ----
-    if now - last_stat > 5:
-        print(f"[STAT] sent={sent} drop={dropped} skip={skipped} q={JPEG_QUALITY} fps_cap={RATE_LIMIT or 0:.1f} HWM={SNDHWM}")
-        sent = dropped = skipped = 0
-        last_stat = now
-
-# ---------------- Cleanup -------------------------------------------
-print("[BYE] Shutting down …")
-try:
-    picam.stop(); picam.close()
-except Exception:
-    pass
-push.close(); sub.close(); ctx.term()
-if UDP_SOCK:
-    UDP_SOCK.close()
