@@ -1,0 +1,460 @@
+Building: Electrical and Electronic Engineering Building
+Description: This is the main building for the Department of Electrical and Electronic Engineering (EEE). It hosts teaching labs, academic offices, and student workspaces.
+Location: Located in zone B2 of the South Kensington campus map.
+How to get there: From the Main Entrance on Exhibition Road, walk straight into Dalby Court, then continue towards the City and Guilds Building. The EEE Building is immediately adjacent, near the Grantham Institute.
+
+Building: Abdus Salam Library
+Description: The central library of Imperial College, offering study spaces, books, and academic resources.
+Location: A3 on the campus map, next to the Chemistry Building.
+How to get there: From Dalby Court, head left towards the Chemistry Building, then continue west until you reach the library entrance.
+
+Building: Sherfield Walkway
+Description: An indoor route connecting major campus buildings including Sherfield, EEE, and City and Guilds.
+Location: Runs from A2 to B3.
+How to get there: Enter through Dalby Court, and head into the Sherfield Building walkway area.
+
+Building: Queen’s Tower
+Description: A historic landmark at the heart of the campus.
+Location: B3 on the map.
+How to get there: From Dalby Court, walk south past the City and Guilds and Business School buildings.
+
+
+Building: City and Guilds Building
+Description: A large teaching and research facility, home to various engineering departments including part of EEE.
+Location: B2 on the campus map.
+How to get there: Enter from Exhibition Road, walk into Dalby Court, and the City and Guilds Building is directly in front.
+
+Building: Sherfield Building (East and West)
+Description: Administrative and support services building including registry, finance, and the Great Hall.
+Location: East in B2, West in A2.
+How to get there: From Dalby Court, go west past the City and Guilds Building, following Sherfield Walkway.
+
+Building: Skempton Building
+Description: Home to the Department of Civil and Environmental Engineering.
+Location: B3, near Queen’s Tower.
+How to get there: Walk past the EEE and Royal School of Mines Buildings, then turn left to find the Skempton Building.
+
+Building: Chemistry Building
+Description: Hosts chemistry labs, lecture theatres, and offices for the Department of Chemistry.
+Location: A3 on the map.
+How to get there: From Dalby Court, go west towards the Dangoor Plaza; the Chemistry Building is on the left side.
+
+Building: Sir Alexander Fleming Building
+Description: Includes medical teaching labs and lecture theatres, named after the discoverer of penicillin.
+Location: B3 on the map.
+How to get there: From the Queen’s Tower, walk south past the Business School, it’s on your left.
+
+Building: Business School
+Description: Imperial College Business School is located adjacent to the Queen’s Lawn.
+Location: B2 on the map.
+How to get there: From Dalby Court, walk towards the Queen’s Tower, the Business School is to the south.
+
+
+
+Building: Beit Quadrangle
+Description: Student halls of residence and home of Imperial College Union.
+Location: A1.
+How to get there: Walk west from the Main Entrance along Prince Consort Road and turn into Beit Quad.
+
+
+Building: Dangoor Plaza
+Description: A central plaza area with seating and outdoor space near the Chemistry Building.
+Location: A3 on the map.
+How to get there: From Dalby Court, walk west to reach the Chemistry Building and you’ll see Dangoor Plaza adjacent.
+
+Building: Royal School of Mines
+Description: Hosts Earth Science and Engineering.
+Location: B2.
+How to get there: From Dalby Court, walk towards the Sherfield Building, turn right to reach Royal School of Mines.
+
+Building: Faculty Building
+Description: Houses College administration and senior leadership.
+Location: B2.
+How to get there: Located directly across from City and Guilds Building.
+
+Building: Sir Ernst Chain Building
+Description: Research building for life sciences and medicine.
+Location: A3.
+How to get there: Head west from Chemistry Building, next to Wolfson Laboratories.
+
+Building: Wohl Reach Out Lab
+Description: STEM outreach lab for schools and external visitors.
+Location: B3.
+How to get there: Located near the Queen’s Tower, follow signs south.
+
+Building: Ethos Sports Centre
+Description: Gym, swimming pool, sports courts, and fitness facilities for staff and students.
+Location: C2.
+How to get there: From Prince's Gardens, head south. It is opposite Eastside Restaurant and Bar.
+
+Building: Prince’s Gardens Halls
+Description: Student accommodation for undergraduates.
+Location: C2.
+How to get there: From Queen’s Gate entrance, enter via Prince’s Gardens road and follow signs to your building.
+
+Building: Weeks Hall
+Description: Another student hall.
+Location: C2 on the map.
+How to get there: Enter from Prince's Gate and walk through the garden path to Weeks Hall.
+
+Building: Queen’s Lawn
+Description: Central green space for social events and student gatherings.
+Location: B3.
+How to get there: Between Queen’s Tower and Business School.
+
+Point to Point Navigation
+
+
+
+
+1. ：EEE Building ➝ Sherfield Building (West)
+From the Electrical and Electronic Engineering Building, exit the front entrance at 2nd flooor and walk south across Dalby Court.  then turn right, enter and cross the Sherfield walkway to the end, then u will enter Sherfield Building (West) 
+
+2. ：Sherfield Building (West) ➝ EEE Building
+To reach the Electrical and Electronic Engineering Building from Sherfield Building (West),  first go to second floor and find walk east past theSherfield walkway to the end. Then turn left, the 2nd floorof The EEE Building is ahead on your right, next to the City and Guilds Building.
+
+3. ：EEE Building ➝ Abdus Salam Library
+Exit the EEE Building and walk ahead cross through Dalby Court.  At southwest corner you will find an RAMP entrance, which is a slightliy tilt walk way; walk through it and then go straight across Dangoor Plaza and library, then get to library
+
+4. ：Abdus Salam Library ➝ EEE Building
+From the main entrance of the Abdus Salam Library, walk east toward the open plaza known as Dangoor Plaza. Pass through the plaza and look for the sloped RAMP entrance leading into Dalby Court. Walk up the ramp, continue straight through Dalby Court, and turn lest. The Electrical and Electronic Engineering (EEE) Building is located ahead on you, just past the City and Guilds Building and next to the Faculty Building.
+
+5. ：EEE Building ➝ Business School
+From the Electrical and Electronic Engineering Building, exit the front entrance at 2nd flooor and walk ahead straight line to the end of main entrance across Dalby Court
+
+6. ：Business School ➝ EEE Building
+From the Business School, walk west then  EEE is ahead of you across Dalby Court
+
+7. ：Sherfield Building (West) ➝ Abdus Salam Library
+leave building , turn left, then you can see the entrance the building
+
+8.：Abdus Salam Library ➝ Sherfield Building (West)
+leave building go straight, library is on your right
+
+9. ：Sherfield Building (West) ➝ Business School
+Walk east from Sherfield Building (West), pass Dalby Court and continue through Sherfield Building (East). at end of college road turn left you can find the main entrance. The Business School will be ahead near main entrance at Exhibition Road.
+
+10. ：Business School ➝ Sherfield Building (West)
+From the Business School, leave at main entrance, turn right, you will see the entrance to the college  car park, turn right and enter in Imperial College Road. Go straight ahead this road, u will  find Sherfield Building 
+
+11. ：Abdus Salam Library ➝ Business School
+Walk east from Library, pass Dalby Court and continue through Sherfield Building (East). at end of college road turn left you can find the main entrance. The Business School will be ahead near main entrance at Exhibition Road.
+
+
+12. ：Business School ➝ Abdus Salam Library
+From the Business School, leave at main entrance, turn right, you will see the entrance to the college  car park, turn right and enter in Imperial College Road. Go straight ahead this road, u will  find Abdus Salam Library is on your right, just before the Sherfield Building (East).
+
+
+
+== Faculty of Engineering ==
+
+Aeronautics
+Focuses on aircraft design, aerodynamics, and space systems engineering.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Bioengineering
+Applies engineering principles to medicine and biology to solve healthcare challenges.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Chemical Engineering
+Covers processes for producing chemicals, fuels, and materials in sustainable ways.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Civil and Environmental Engineering
+Deals with infrastructure design and environmental sustainability.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Computing
+Explores algorithms, AI, systems, and software engineering.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Dyson School of Design Engineering
+Combines creativity with engineering for product and system design.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Earth Science and Engineering
+Studies geological processes, energy, and planetary science.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Electrical and Electronic Engineering
+Focuses on circuits, communication systems, control, and robotics INTELLIGENT SYSTEM.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Materials
+Examines the structure and performance of metals, ceramics, polymers, and composites.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Mechanical Engineering
+Covers mechanical systems, dynamics, thermofluids, and robotics.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+== Faculty of Medicine ==
+
+Brain Sciences
+Researches neurological disorders, cognition, and mental health.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Immunology and Inflammation
+Investigates immune responses and inflammatory diseases.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Infectious Disease
+Focuses on the mechanisms, prevention, and treatment of infections.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Institute of Clinical Sciences
+Translates basic science into clinical innovations.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Metabolism, Digestion and Reproduction
+Studies nutrition, endocrinology, and reproductive health.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+National Heart and Lung Institute
+Leads research in cardiovascular and respiratory systems.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+School of Public Health
+Works on global health, epidemiology, and health policy.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Surgery and Cancer
+Advances treatment strategies in surgical care and oncology.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+== Faculty of Natural Sciences ==
+
+Chemistry
+Covers molecular science, synthesis, and materials chemistry.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Mathematics
+Research in pure and applied mathematics, statistics, and data science.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Physics
+Explores fundamental particles, quantum mechanics, and astrophysics.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Life Sciences
+Studies genetics, evolution, cell biology, and ecology.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Centre for Environmental Policy
+Focuses on sustainability, climate policy, and environmental science.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+== Imperial Business School ==
+
+Finance
+Specializes in investment, risk management, and financial technology.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Management and Entrepreneurship
+Focuses on leadership, innovation, and new ventures.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Economics and Public Policy
+Examines economic theory and its application in policy-making.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Marketing
+Studies consumer behavior, branding, and digital marketing.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Analytics and Operations
+Deals with data-driven decision-making and supply chain optimization.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+== Education Centres and Services ==
+
+Careers Service
+Supports students in career planning and employability.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Centre for Academic English
+Offers academic communication support for students.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Centre for Languages, Culture and Communication
+Provides language learning and cultural courses.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Educational Development Unit
+Enhances teaching practice and learning innovation.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Early Career Researcher Institute (ECRI)
+Supports development of early-career researchers.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Library
+Provides access to knowledge resources and study environments.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Postdoc and Fellows Development Centre
+Professional development for research staff.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+The Central Education Office
+Oversees academic governance and student support.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+Centre for Higher Education Research and Scholarship
+Advances educational practice through research.. This department plays a key role in Imperial’s interdisciplinary research and education.
+
+
+4xxxx: 1st year course
+5xxxx: 1st year course
+6xxxx: 1st year course
+7xxxx: 1st year course
+
+ELEC40012 - Mathematics 1
+Foundation in calculus, linear algebra, and complex numbers for engineering analysis.
+
+ELEC40009 - Topics in Electrical Engineering
+Overview of electrical engineering concepts, including signals, systems, and electromagnetics.
+
+ELEC40002 - Programming for Engineers
+Introduction to programming in Python/C with engineering problem-solving.
+
+ELEC40003 - Analysis and Design of Circuits
+Basic circuit theory and design including resistive, capacitive, and inductive circuits.
+
+ELEC40004 - Digital and Computer Architecture
+Introduction to logic design and computer architecture.
+
+ELEC40006 - Electronics Design Project 1
+Hands-on project applying electronics and programming in a team environment.
+
+ELEC50011 - Mathematics for Engineers
+Advanced mathematics including differential equations and transforms for engineering applications including complex integral and probablistic
+
+ELEC50006 - Discrete Mathematics
+Learn Advanced Algorithms to deal with time and space complexity
+
+ELEC50010 - Instruction Architectures and Compilers
+Understanding instruction sets, compilers and low-level code generation.
+
+ELEC50014 - Software Systems
+System-level programming, operating systems concepts.
+
+ELEC50009 - Information Processing
+Theory and implementation of algorithms for signal and data processing. and build a FPGA Project
+
+ELEC50013 - Signals and Systems
+Analysis of linear time-invariant systems, Laplace and Fourier transforms.
+
+ELEC50002 - Communications
+Principles of analog and digital communication systems.
+
+ELEC50004 - Control Systems
+Feedback control theory, stability, and system response.
+
+ELEC50015 - Electronics Design Project 2
+Team-based design and implementation of an embedded system.
+
+ELEC60021 - Mathematics for Signals and Systems
+Advanced mathematics in linear systems and signal analysis.
+
+ELEC60004 - Machine Reasoning
+Principles of logic-based reasoning and knowledge representation in AI.
+
+ELEC60005 - Biomedical Electronics
+Electronics and instrumentation used in biomedical applications.
+
+ELEC60008 - Control Engineering
+Advanced control system design and stability analysis.
+
+ELEC60010 - Digital Signal Processing
+Discrete signal analysis and filtering techniques.
+
+ELEC60006 - Communication Networks
+Network protocols, architectures and performance evaluation.
+
+ELEC60019 - Machine Learning
+Foundations and practical methods of supervised and unsupervised learning.
+
+ELEC60002 - Statistical Signal Processing and Inference
+Estimation and detection theory in signal processing.
+
+ELEC60009 - Deep Learning
+Neural networks, CNNs and training methodologies.
+
+ELEC60011 - Digital Systems Design
+Design of digital hardware systems using HDL.
+
+ELEC60013 - Embedded Systems
+Real-time embedded software and hardware integration.
+
+ELEC60015 - High Level Programming
+Programming techniques in high-level languages.
+
+ELEC60031 - Principles of Classical and Modern Radar Systems
+Radar system principles and signal interpretation.
+
+ELEC60025 - Real Time Digital Signal Processing
+Implementation of DSP algorithms in real-time.
+
+ELEC60030 - Robotic Manipulation
+Kinematics and control of robotic arms and manipulators.
+
+ELEC60033 - Electric Vehicle Technologies
+Technology and control systems in electric vehicles.
+
+ELEC70017 - Individual Project
+Final-year research or design project with academic or industrial relevance.
+
+ELEC70108 - Professional Competencies Portfolio
+Portfolio-based module on engineering professionalism.
+
+ELEC70106 - Ethics and Sustainability
+Integration of ethical and sustainable practices into engineering.
+
+ELEC70045 - Advanced Communication Theory
+Information theory and advanced digital communications.
+
+ELEC70069 - Cryptography and Coding Theory
+Mathematical foundations of secure communication.
+
+ELEC70078 - Digital Image Processing
+Image analysis and enhancement techniques.
+
+ELEC70056 - Hardware and Software Verification
+Formal methods for ensuring system correctness.
+
+ELEC70022 - Modelling and Control of Multi-body Mechanical Systems
+Dynamics and control of interconnected mechanical systems.
+
+ELEC70098 - Optimisation
+Convex and non-convex optimisation in engineering problems.
+
+ELEC70075 - Power System Economics
+Economic operation and optimization in power systems.
+
+ELEC70048 - Probability and Stochastic Processes
+Modeling randomness and noise in systems.
+
+ELEC70071 - Self-Organising Multi-Agent Systems
+Coordination and learning in distributed agent systems.
+
+ELEC70091 - Stability and Control of Non-linear Systems
+Control of systems with nonlinear behavior.
+
+ELEC70092 - Systems Identification and Learning
+System modeling and adaptive learning techniques.
+
+ELEC70037 - Topics in Large Dimensional Data Processing
+High-dimensional data and matrix computations.
+
+ELEC70039 - Wavelets, Representation Learning and their Applications
+Wavelet transforms and feature learning.
+
+ELEC70110 - Neuroscience for Machine Learners
+Neuroscientific principles relevant to ML and AI.
+
+ELEC70001 - Adaptive Signal Processing and Machine Intelligence
+Adaptive filters and intelligent systems.
+
+ELEC70073 - Computer Vision and Pattern Recognition
+Recognition algorithms and visual learning.
+
+ELEC70077 - Digital Signal Processing and Digital Filters
+Design of digital filters for engineering.
+
+ELEC70009 - Discrete-event Systems
+Modelling and analysis of event-driven systems.
+
+ELEC70006 - Design of Linear Multivariable Systems
+Design and optimization of MIMO control systems.
+
+ELEC70015 - Human-centred Robotics
+Designing robots to interact safely with humans.
+
+ELEC70070 - Information Theory
+Fundamentals of data compression and channel capacity 
+
+ELEC70028 - Predictive Control
+Model-based control strategies for dynamic systems.
+
+ELEC70103 - Signal Processing and Machine Learning for Finance
+Applications of ML and signal processing in financial data.
+
+ELEC70080 - Speech Processing
+Speech recognition, synthesis and feature extraction.
+
+ELEC70076 - Sustainable Electrical Systems
+Sustainable design and renewable integration.
+
+ELEC70067 - Traffic Theory and Queuing Systems
+Performance modeling of networked systems.
+
+ELEC70109 - Advanced Deep Learning Systems
+State-of-the-art deep learning architectures.
+
+ELEC70082 - Distributed Optimisation and Learning
+Decentralised algorithms for large-scale systems.

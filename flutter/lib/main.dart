@@ -1,14 +1,16 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
-// Your imports for each mode:
+import 'package:http/http.dart' as http;
+
 import 'screens/chat.dart';
 import 'screens/remote.dart';
 import 'screens/track.dart';
 import 'screens/weather.dart';
 
-import 'package:http/http.dart' as http;
-
 final esp32 = 'http://172.20.10.11:80';
 final List mode_names = ['track', 'weather', 'remote', 'chat'];
+
 void main() {
   runApp(const MyApp());
 }
@@ -34,14 +36,47 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   // 0: Stream, 1: Sensors, 2: Joystick, 3: Audio
   int _selectedIndex = 1;
+  String? _power; 
+  String? _percent; 
 
-  // Map each index to its screen widget
+  late final Timer _timer;
+  static const Duration _pollInterval = Duration(seconds: 1);
+
+  @override
+  void initState() {
+    super.initState();
+    // Fetch immediately, then on an interval
+    _updateStatus();
+    _timer = Timer.periodic(_pollInterval, (_) => _updateStatus());
+  }
+
   static final List<Widget> _modes = <Widget>[
-    TrackingScreen(),     // 🚀 Livestream
-    WeatherScreen(), // 🧪 Sensors
-    JoystickScreen(),        // 🎮 Joystick
-    AudioRecorderScreen(),   // 🎤 Audio
+    TrackingScreen(),
+    WeatherScreen(),
+    JoystickScreen(),
+    AudioRecorderScreen(),
   ];
+
+  IconData _batteryIconFor(String? percent) {
+    final pct = double.tryParse(percent ?? '')?.round();
+    if (pct == null)               return Icons.battery_unknown;
+    if (pct <= 5)   return Icons.battery_0_bar;
+    if (pct <= 15)  return Icons.battery_1_bar;
+    if (pct <= 30)  return Icons.battery_2_bar;
+    if (pct <= 45)  return Icons.battery_3_bar;
+    if (pct <= 60)  return Icons.battery_4_bar;
+    if (pct <= 75)  return Icons.battery_5_bar;
+    if (pct <= 90)  return Icons.battery_6_bar;
+    return Icons.battery_full;
+  }
+
+  Color _batteryColorFor(String? percent, ThemeData theme) {
+    final pct = double.tryParse(percent ?? '')?.round();
+    if (pct == null)               return theme.colorScheme.onSurfaceVariant;
+    if (pct <= 15)  return Colors.red;
+    if (pct <= 40)  return Colors.amber;
+    return Colors.green;
+  }
 
   void _onDestinationSelected(int index) async {
     if (index == _selectedIndex) return;
@@ -65,6 +100,25 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _updateStatus() async {
+    final uri = Uri.parse('$esp32/battery'); // adjust endpoint if needed
+    try {
+      final res = await http.get(uri).timeout(const Duration(seconds: 2));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        if (!mounted) return;
+        setState(() {
+          _power   = (data['power'] as num?)?.toStringAsFixed(2);
+          _percent = (data['percent'] as num?)?.toStringAsFixed(2);
+        });
+      } else {
+        debugPrint('❌ Status GET failed: ${res.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Status poll error: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -75,33 +129,26 @@ class _HomePageState extends State<HomePage> {
         title: Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            // 1) Column with P and V
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: const [
-                Text(
-                  'P = 0W',
-                  style: TextStyle(fontSize: 12),
-                ),
-                Text(
-                  'V = 0.09V',
-                  style: TextStyle(fontSize: 12),
-                ),
-              ],
-            ),
-            const SizedBox(width: 8),
+            if (_power != null) ...[
+              Text(
+                'P = ${_power}W',
+                style: const TextStyle(fontSize: 12),
+              ),
+              const SizedBox(width: 4),
+            ],
             // 2) Battery icon
-            const Icon(
-              Icons.battery_full,
+            Icon(
+              _batteryIconFor(_percent),
               size: 20,
+              color: _batteryColorFor(_percent, Theme.of(context)),
             ),
-            const SizedBox(width: 4),
-            // 3) Percentage
-            const Text(
-              '99%',
-              style: TextStyle(fontSize: 16),
-            ),
+            if (_percent != null) ...[
+              const SizedBox(width: 4),
+              Text(
+                '$_percent%',
+                style: const TextStyle(fontSize: 16),
+              ),
+            ],
             const SizedBox(width: 8),
           ],
         ),

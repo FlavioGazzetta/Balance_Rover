@@ -1,6 +1,9 @@
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../widgets/slider.dart';
+import 'package:flutter_mjpeg/flutter_mjpeg.dart';
+import 'dart:convert';
+import 'dart:io';
+import 'package:http/http.dart' as http;
 
 class TrackingScreen extends StatefulWidget {
   const TrackingScreen({Key? key}) : super(key: key);
@@ -9,14 +12,56 @@ class TrackingScreen extends StatefulWidget {
   _TrackingScreenState createState() => _TrackingScreenState();
 }
 
-class _TrackingScreenState extends State<TrackingScreen> {
-  Uint8List? _frame;
-  final List<int> _visibleIds = [1];
+class _TrackingScreenState extends State<TrackingScreen> with WidgetsBindingObserver {
+  List<int> _visibleIds = [1];
   int? _trackingId;
+  final streamUrl = 'http://172.20.10.2:8000/stream';
+  bool _isLive = true;
+  late RawDatagramSocket _udp;
 
-  void _onTap(int id) {
+  void _onTap(int id) async {
     if (id == _trackingId) return;
     setState(() => _trackingId = id);
+    final data = utf8.encode(_trackingId.toString());
+    _udp.send(data, InternetAddress('172.20.10.2'), 7777);
+    print('[UDP] sent $_trackingId → : RPI');
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    RawDatagramSocket.bind(InternetAddress.anyIPv4, 9999)
+      .then((sock) {
+    _udp = sock;
+
+    _udp.listen((RawSocketEvent evt) {
+      if (evt == RawSocketEvent.read) {
+        final datagram = _udp.receive();
+        if (datagram == null) return;
+
+        final payload = utf8.decode(datagram.data).trim();
+        try {
+          final List<dynamic> ids = jsonDecode(payload);
+          setState(() => _visibleIds = ids.cast<int>());
+        } catch (err) {
+          print('[UDP] bad payload: $payload – $err');
+        }
+      }
+    });
+  });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _udp.close();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    setState(() => _isLive = state == AppLifecycleState.resumed);
   }
 
   @override
@@ -29,12 +74,18 @@ class _TrackingScreenState extends State<TrackingScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 1) Top image
-              Image.asset(
-                'assets/images/image.jpg',
-                width: 200,   // adjust to fit your layout
-                height: 200,  // adjust as needed
-                fit: BoxFit.contain,
+              AspectRatio(
+                aspectRatio: 1280 / 960,
+                child: Mjpeg(
+                  stream: streamUrl,
+                  isLive: _isLive,
+                  timeout: const Duration(seconds: 5),
+                  error: (ctx, err, st) => Text(
+                    'Stream error:\n$err',
+                    style: const TextStyle(color: Colors.red),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               ),
 
               const SizedBox(height: 16),

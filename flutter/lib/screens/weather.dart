@@ -48,14 +48,13 @@ class _WeatherScreenState extends State<WeatherScreen> {
           desiredAccuracy: LocationAccuracy.high);
       serverLat = position.latitude;
       serverLng = position.longitude;
-      final uri = Uri.parse('http://longfei.store:8000/api/cart/location/');
+      final uri = Uri.parse('http://longfei.store:8000/api/location/');
       final response = await http.post(
         uri,
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: {
-          'id': 'imperial.ac.uk',
           'lat': serverLat.toString(),
           'lng': serverLng.toString(),
         },
