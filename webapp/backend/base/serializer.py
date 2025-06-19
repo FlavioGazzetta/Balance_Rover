@@ -1,29 +1,23 @@
 from rest_framework import serializers
-from .models import Product, Scanner, Cart
+from .models import Robot, Chat, Location, Context
 import json
 
-class ProductSerializer(serializers.ModelSerializer):
+class RobotSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Product
+        model = Robot
         fields = '__all__'
 
-class ScannerSerializer(serializers.ModelSerializer):
-    center = serializers.SerializerMethodField()
-    radius = serializers.SerializerMethodField()
-    
+class ChatSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Scanner
-        fields = ['center', 'radius']
-
-    def get_center(self, obj):
-        location = obj.location.split(',')
-        return { 'lat': float(location[0]), 'lng': float(location[1]) }
-    
-    def get_radius(self, obj):
-        location = obj.location.split(',')
-        return float(location[2])
-
-class CartSerializer(serializers.ModelSerializer):
+        model = Chat
+        fields = '__all__'
+        
+class LocationSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Cart
+        model = Location
+        fields = '__all__'
+
+class ContextSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Context
         fields = '__all__'

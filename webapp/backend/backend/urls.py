@@ -21,8 +21,7 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/products/", include('base.urls.product_urls')),
-    path("api/chat/", include('base.urls.cart_urls')),
+    path("api/", include('base.urls.urls')),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -1,29 +1,28 @@
 from django.db import models
+from django.conf import settings
 # Create your models here.
 
-class Product(models.Model):
-    name = models.CharField(max_length=200, null=True, blank=True)
-    barcode = models.CharField(max_length=200, null=True, blank=True)
-    stock = models.IntegerField(null=True, blank=True, default=0)
-    price = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+class Robot(models.Model):
     _id = models.AutoField(primary_key=True, editable=False)
+    last_seen_location = models.TextField(null=True, blank=True, default="")
+    account_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    in_use = models.BooleanField(default=False)
 
     def __str__(self):
-        return str(self.name)
+        return str(self.account_id.username)
 
-class Scanner(models.Model):
-    location = models.CharField(max_length=200, null=True, blank=True)
+class Chat(models.Model):
     _id = models.AutoField(primary_key=True, editable=False)
+    robot = models.ForeignKey(Robot, on_delete=models.CASCADE)
+    chat_sequence = models.IntegerField()
+    chat_summary = models.TextField()
 
-    def __str__(self):
-        return str(self._id)
-    
-class Cart(models.Model):
-    scanner = models.OneToOneField(Scanner, on_delete=models.CASCADE, null=True)
-    cartItems = models.TextField(null=True, blank=True, default="") # product_id:qty,product_id2:qty2
-    latestTrade = models.TextField(null=True, blank=True, default="e1c4b7ea-a3a6-4a2e-87f5-d549f9576dd3")
-    latestTradeAmount = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+class Location(models.Model):
     _id = models.AutoField(primary_key=True, editable=False)
+    robot = models.ForeignKey(Robot, on_delete=models.CASCADE)
+    gps_sequence = models.IntegerField()
+    gps_coordinates = models.TextField()
 
-    def __str__(self):
-        return (str(self._id))
+class Context(models.Model):
+    _id = models.AutoField(primary_key=True, editable=False)
+    rag = models.TextField(default='')

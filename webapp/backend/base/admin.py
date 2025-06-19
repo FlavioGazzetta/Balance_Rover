@@ -1,6 +1,7 @@
 from django.contrib import admin
-from .models import Product, Cart, Scanner
+from .models import Robot, Location, Chat, Context
 # Register your models here.
-admin.site.register(Product)
-admin.site.register(Cart)
-admin.site.register(Scanner)
+admin.site.register(Robot)
+admin.site.register(Location)
+admin.site.register(Chat)
+admin.site.register(Context)
