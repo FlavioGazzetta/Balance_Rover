@@ -29,7 +29,7 @@ STREAM_PORT = 8000
 # ───────────── Image / preview settings ─────────────────────────────
 JPEG_Q    = 60
 THUMB_FPS = 15.0
-PREV_W, PREV_H   = 1280, 960
+PREV_W, PREV_H   = 800, 600
 THUMB_W, THUMB_H = 320,  240
 SX, SY = PREV_W / THUMB_W, PREV_H / THUMB_H   # scale tracker→preview
 
