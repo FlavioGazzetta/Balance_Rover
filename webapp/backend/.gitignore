@@ -8,7 +8,7 @@ __pycache__/
 /static/
 # C extensions
 *.so
-
+backend/
 # Distribution / packaging
 .Python
 build/

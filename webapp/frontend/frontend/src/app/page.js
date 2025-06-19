@@ -1,29 +1,63 @@
-'use client'; // Make sure this is a client component since it uses hooks
+"use client"; // Make sure this is a client component since it uses hooks
 
 import React, { useState, useEffect } from 'react';
 import { GoogleMap, Polyline, useLoadScript } from '@react-google-maps/api';
 
+// === Config ===
 const mapContainerStyle = {
-  width: '100vw',
-  height: '100vh',
+  width: "100vw",
+  height: "100vh",
 };
 const defaultCenter = { lat: 51.4985533, lng: -0.176324 };
-// A palette of colors for different robots
-const COLORS = ['#FF0000', '#00AAFF', '#00CC44', '#FFAA00', '#AA00FF', '#00FFAA'];
 
-// Dummy data (Imperial College London area) in case of connection failure
+// Endpoint serving *all* robot trajectories
+const API_URL = "http://longfei.store:8000/api/all/";
+
+// A palette of colors for different robots – repeat if we run out
+const COLORS = ["#FF0000", "#00AAFF", "#00CC44", "#FFAA00", "#AA00FF", "#00FFAA"];
+
+// Fallback dummy data (Imperial College London area) in case of connection failure
 const DUMMY_ROBOTS = [
   [
-    [51.498800, -0.174630],
-    [51.499200, -0.174200],
-    [51.499600, -0.173800],
+    [51.4988, -0.17463],
+    [51.4992, -0.1742],
+    [51.4996, -0.1738],
   ],
   [
-    [51.498000, -0.175000],
-    [51.497500, -0.174500],
-    [51.497000, -0.174000],
+    [51.498, -0.175],
+    [51.4975, -0.1745],
+    [51.497, -0.174],
   ],
 ];
+
+/**
+ * Normalises the response coming back from `API_URL`.
+ * Today the API returns an *array of arrays* of [lat, lng] tuples, e.g.
+ *     [
+ *       [ [51.498, -0.174], [51.499, -0.173] ],
+ *       ...
+ *     ]
+ * If the backend changes its shape (e.g. wraps each robot in an object), we
+ * attempt to extract the coordinates automatically so the UI won’t crash.
+ */
+function normaliseApiData(raw) {
+  // Case 1: already the expected [[lat,lng], ...] [][] structure
+  if (Array.isArray(raw) && Array.isArray(raw[0]) && Array.isArray(raw[0][0])) {
+    return raw;
+  }
+
+  // Case 2: array of objects: [{path: [[lat,lng]]}, ...]
+  if (Array.isArray(raw) && typeof raw[0] === "object" && raw[0] !== null) {
+    return raw.map(r => {
+      if (Array.isArray(r.path)) return r.path;
+      if (Array.isArray(r.coordinates)) return r.coordinates;
+      return [];
+    });
+  }
+
+  // Unknown shape – fall back to dummy
+  return DUMMY_ROBOTS;
+}
 
 const RobotMovementMap = () => {
   // robots: array of arrays of [lat, lng] tuples
@@ -33,42 +67,40 @@ const RobotMovementMap = () => {
 
   // Fetch robot paths from server
   const fetchRobots = () => {
-    fetch('http://3.8.78.228:8000/api/cart/location/')
+    fetch(API_URL)
       .then(res => {
-        if (!res.ok) {
-          // Use dummy if server returns error
-          throw new Error('Server error');
-        }
+        if (!res.ok) throw new Error(`Server responded ${res.status}`);
         return res.json();
       })
       .then(data => {
-        // Expect data as Array<Array<[lat, lng]>>
-        setRobots(data);
-        // Initialize visibility for new robots, preserving existing where possible
-        setVisible(data.map((_, idx) => (visible[idx] !== undefined ? visible[idx] : true)));
+        const normalised = normaliseApiData(data);
+        setRobots(normalised);
+        // Preserve previously toggled visibility where possible
+        setVisible(v => normalised.map((_, idx) => v[idx] ?? true));
       })
-      .catch(() => {
-        // On any error, fall back to dummy data
+      .catch(err => {
+        console.error("Robot API error – falling back to dummy data:", err);
         setRobots(DUMMY_ROBOTS);
         setVisible(DUMMY_ROBOTS.map(() => true));
       });
   };
 
+  // Pull data initially and every 5 s
   useEffect(() => {
     fetchRobots();
-    const intervalId = setInterval(fetchRobots, 5000);
-    return () => clearInterval(intervalId);
+    const interval = setInterval(fetchRobots, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const { isLoaded, loadError } = useLoadScript({
-    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '',
-    libraries: ['geometry'],
+    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
+    libraries: ["geometry"],
   });
 
   if (loadError) return <div>Error loading maps</div>;
   if (!isLoaded) return <div>Loading maps...</div>;
 
-  // Toggle visibility of a robot's path
+  // Toggle visibility of a robot’s path
   const toggleVisibility = idx => {
     setVisible(v => {
       const next = [...v];
@@ -85,37 +117,33 @@ const RobotMovementMap = () => {
   };
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: "relative" }}>
       {/* Checkbox controls */}
       <div
         style={{
-          position: 'absolute',
+          position: "absolute",
           top: 10,
           right: 10,
           zIndex: 100,
-          backgroundColor: 'rgba(255,255,255,0.9)',
+          backgroundColor: "rgba(255,255,255,0.9)",
           padding: 8,
           borderRadius: 4,
         }}
       >
         {robots.map((_, idx) => (
-          <label key={idx} style={{ display: 'block', marginBottom: 4 }}>
+          <label key={idx} style={{ display: "block", marginBottom: 4 }}>
             <input
               type="checkbox"
               checked={visible[idx] || false}
               onChange={() => toggleVisibility(idx)}
-            />{' '}
+            />{" "}
             Robot {idx + 1}
           </label>
         ))}
       </div>
 
       {/* Google Map with robot paths */}
-      <GoogleMap
-        mapContainerStyle={mapContainerStyle}
-        zoom={16}
-        center={defaultCenter}
-      >
+      <GoogleMap mapContainerStyle={mapContainerStyle} zoom={16} center={defaultCenter}>
         {robots.map((path, idx) =>
           visible[idx] && (
             <Polyline
@@ -128,8 +156,8 @@ const RobotMovementMap = () => {
                 icons: [
                   {
                     icon: arrowSymbol,
-                    offset: '100%',
-                    repeat: '30px',
+                    offset: "100%",
+                    repeat: "30px",
                   },
                 ],
               }}
