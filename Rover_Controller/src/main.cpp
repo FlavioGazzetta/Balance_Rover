@@ -88,6 +88,7 @@ volatile float  g_webDesired = 0.0f;   // position set-point from master
 volatile float  h_webDesired = 0.0f;   // heading set-point from master
 volatile bool   fallen       = false;
 
+
 volatile float rotpos        = 0.0f;
 volatile float prev_rotpos   = 0.0f;
 volatile float spinRate      = 0.0f;
@@ -125,6 +126,7 @@ void onSlaveRecv(const uint8_t*, const uint8_t* data, int len)
       float ar = atof(endptr + 1);
       xCam    = (int)xc;
       areaCam = ar;
+      lastCamPacketMs = millis();
       return;
     }
   }
@@ -199,6 +201,11 @@ void setup()
   esp_now_add_peer(&peer);
 }
 
+bool wait = false;
+
+float prevh = 0;
+float prevg = 0;
+
 /* ──────────────────────── MAIN LOOP ──────────────────────── */
 void loop()
 {
@@ -221,7 +228,9 @@ void loop()
       }
     }
   } else if (now - lastCamPacketMs > CAM_TIMEOUT) {
-    /* (optional) handle loss of camera packets */
+    wait = true;
+  } else if (now - lastCamPacketMs < CAM_TIMEOUT){
+    wait = false;
   }
 
     /* --------------- INNER LOOP (20 ms) ---------------- */
@@ -252,10 +261,20 @@ void loop()
   if (now - innerT >= INNER_INTERVAL) {
     innerT += INNER_INTERVAL;
 
+    Serial.println(wait);
+
     int   xCamCentered = xCam - 640;   
     float deltaYaw     = -((xCamCentered/30.0)*(PI/180));
-    h_webDesired = rotpos + deltaYaw;          
+    if(!wait){
+      h_webDesired = rotpos + deltaYaw;
+      prevh = h_webDesired; 
+    }
+    else{
+      h_webDesired = prevh;
+    }   
     
+    //Serial.println(areaCam);
+    //Serial.println(xCam);
     
     // 1) Determine angle setpoint (reference) based on manual vs. auto
     ref = REFERENCE_ANGLE;
@@ -311,7 +330,15 @@ void loop()
     float wheel2PosRad = step2.getPositionRad();
     float posEst = 0.5f * (wheel1PosRad + wheel2PosRad);
 
-    g_webDesired = posEst + (areapercent - 0.6) * 200;
+    
+
+    if(!wait){
+      g_webDesired = posEst + (areapercent - 0.6) * 1000;
+      prevg = g_webDesired; 
+    }
+    else{
+      g_webDesired = prevg;
+    }
 
     /* ----- DRIVE WHEELS BASED ON MODE (unless fallen) ----- */
     if (fallen) {
