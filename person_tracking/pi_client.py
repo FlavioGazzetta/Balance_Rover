@@ -10,10 +10,6 @@ Run with **no arguments**:
 • IDS list     → UDP 9999 (JSON array)
 • xCam,area    → WebSocket ws://172.20.10.11:80/ws_data   (text: "x,area")
 • MJPEG preview (boxes + large white ID labels) on http://<Pi-IP>:8000/stream
-
-NEW: If the requested tracking_id is **not** visible, the camera now
-      falls back to the person whose bounding box covers the largest
-      area of the frame.
 """
 
 import sys, time, struct, signal, queue, threading, socket, json
@@ -51,7 +47,6 @@ print(f"[INIT] IDS→{IDS_ADDR}   |  listen TID *:{PORT_TID}")
 ws_lock = threading.Lock()
 ws_conn = None
 def ws_send(txt: str):
-    """Simple, reconnect-on-failure wrapper around websocket-client."""
     global ws_conn
     with ws_lock:
         try:
@@ -61,10 +56,8 @@ def ws_send(txt: str):
             ws_conn.send(txt)
         except Exception as e:
             print(f"[WS] error: {e}")
-            try:
-                ws_conn.close()
-            except:
-                pass
+            try: ws_conn.close()
+            except: pass
             ws_conn = None
 
 # ───────────── JPEG encoder (TurboJPEG if available) ────────────────
@@ -75,7 +68,7 @@ try:
         return TJ.encode(img, quality=JPEG_Q, pixel_format=TJPF_RGB)
 except Exception:
     def jpeg_encode(img):
-        return cv2.imencode(".jpg", img,
+        return cv2.imencode('.jpg', img,
                             [cv2.IMWRITE_JPEG_QUALITY, JPEG_Q])[1].tobytes()
 
 # ───────────── ZMQ sockets (tracker) ────────────────────────────────
@@ -86,7 +79,6 @@ sub.connect(f"tcp://{YOLO_IP}:5556")
 
 cur_boxes, cur_lock = [], threading.Lock()
 def recv_loop():
-    """Continuously pull the latest detection list from YOLO."""
     while True:
         try:
             data = sub.recv_json(flags=zmq.NOBLOCK)
@@ -99,7 +91,6 @@ threading.Thread(target=recv_loop, daemon=True).start()
 # ───────────── Flask MJPEG preview ──────────────────────────────────
 app = Flask(__name__)
 FRAME_Q = queue.Queue(maxsize=1)
-
 @app.route("/stream")
 def stream():
     def gen():
@@ -120,15 +111,13 @@ print(f"[HTTP] Preview :{STREAM_PORT}/stream")
 picam = Picamera2()
 picam.configure(picam.create_preview_configuration(
         main={'format':'RGB888','size':(PREV_W, PREV_H)}))
-picam.start()
-print("[INIT] Picamera2 started")
+picam.start(); print("[INIT] Picamera2 started")
 
 # ───────────── Globals ----------------------------------------------
 tracking_id = None   # chosen via UDP 7777
 
 # ───────────── Helpers ----------------------------------------------
 def send_ids(ids_set):
-    """Broadcast the current list of visible IDs to the UI."""
     sock_ids.sendto(json.dumps(sorted(ids_set)).encode(), IDS_ADDR)
 
 # ───────────── Main loop ────────────────────────────────────────────
@@ -153,63 +142,56 @@ while True:
 
     # 1) capture frame
     frame = picam.capture_array('main')
-    frame[:, :, [0, 2]] = frame[:, :, [2, 0]]  # RGB→BGR
+    frame[:, :, [0,2]] = frame[:, :, [2,0]]  # RGB→BGR
 
     # 2) snapshot detections
     with cur_lock:
-        boxes   = list(cur_boxes)
+        boxes = list(cur_boxes)
         ids_set = {b[4] for b in boxes}
 
-    # 3) choose target box
-    #    – If requested ID is visible, stick with it.
-    #    – Otherwise, pick the person covering the largest area.
+    # 3) find target box (if present)
     box = None
-    if tracking_id is not None and tracking_id in ids_set:
+    if tracking_id in ids_set:
         box = next(b for b in boxes if b[4] == tracking_id)
-    elif boxes:  # fallback
-        box = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
 
-    # 4) draw all boxes + big white ID label
-    for x1, y1, x2, y2, tid, _ in boxes:
+    # 4) draw all boxes + large white ID
+    for x1,y1,x2,y2,tid,_ in boxes:
         # rectangle
-        cv2.rectangle(frame,
-                      (int(x1 * SX), int(y1 * SY)),
-                      (int(x2 * SX), int(y2 * SY)),
-                      (0, 255, 0), 2)
+        cv2.rectangle(frame,(int(x1*SX),int(y1*SY)),
+                             (int(x2*SX),int(y2*SY)),(0,255,0),2)
         # text background
-        label = str(tid)
-        (tw, th), _ = cv2.getTextSize(label, FONT, FONT_SCALE, FONT_THICK)
-        px = int((x1 + x2) * SX * 0.5 - tw / 2) - BOX_PAD
-        py = int((y1 + y2) * SY * 0.5 + th / 2) + BOX_PAD
-        cv2.rectangle(frame,
-                      (px, py - th - 2 * BOX_PAD),
-                      (px + tw + 2 * BOX_PAD, py),
-                      (255, 255, 255), thickness=-1)
-        cv2.putText(frame, label, (px + BOX_PAD, py - BOX_PAD),
-                    FONT, FONT_SCALE, (0, 0, 0), FONT_THICK)
+        label   = str(tid)
+        (tw,th), _ = cv2.getTextSize(label, FONT, FONT_SCALE, FONT_THICK)
+        px = int((x1+x2)*SX*0.5 - tw/2) - BOX_PAD
+        py = int((y1+y2)*SY*0.5 + th/2) + BOX_PAD
+        cv2.rectangle(frame,(px,py-th-2*BOX_PAD),
+                             (px+tw+2*BOX_PAD, py),
+                             (255,255,255), thickness=-1)
+        # text
+        cv2.putText(frame,label,(px+BOX_PAD,py-BOX_PAD),
+                    FONT,FONT_SCALE,(0,0,0),FONT_THICK)
 
-    # 5) send xCam,area via WebSocket for the chosen target (if any)
+    # 5) send xCam,area via WebSocket for target
     if box:
-        x1, y1, x2, y2, _, _ = box
-        xCam = int((x1 + x2) * 0.5 * SX)
-        area = int((x2 - x1) * SX * (y2 - y1) * SY)
+        x1,y1,x2,y2,_,_ = box
+        xCam = int((x1+x2)*0.5*SX)
+        area = int((x2-x1)*SX * (y2-y1)*SY)
         ws_send(f"{xCam},{area}")
 
-    # 6) broadcast current IDS list
+    # 6) IDS list broadcast
     send_ids(ids_set)
 
-    # 7) thumbnail PUSH (fps-capped) to YOLO UI
+    # 7) thumbnail PUSH (fps-capped)
     now = time.time()
-    if (now - last_thumb) >= 1.0 / max(THUMB_FPS, 1e-6):
-        thumb = cv2.resize(frame, (THUMB_W, THUMB_H))
-        push.send(struct.pack('<d', now) + jpeg_encode(thumb))
+    if (now-last_thumb) >= 1.0/max(THUMB_FPS,1e-6):
+        thumb = cv2.resize(frame,(THUMB_W,THUMB_H))
+        push.send(struct.pack('<d',now) + jpeg_encode(thumb))
         last_thumb = now
 
-    # 8) MJPEG preview
+    # 8) preview
     try:
         jpg = jpeg_encode(frame)
-        if FRAME_Q.full():
-            FRAME_Q.get_nowait()
+        if FRAME_Q.full(): FRAME_Q.get_nowait()
         FRAME_Q.put_nowait(jpg)
     except Exception:
         pass
