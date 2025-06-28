@@ -132,7 +132,7 @@ class _AudioRecorderScreenState extends State<AudioRecorderScreen> {
   }
 
   Future<void> _sendTextToOpenAITTS(String text) async {
-    final apiKey = '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';
+    final apiKey = 'test';
     final url = Uri.parse('https://api.openai.com/v1/chat/completions');
     setState(() => _isSending = true);
     try {
