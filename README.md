@@ -8,8 +8,8 @@
 
 ## Authors
 
-- Evangelia (Lia) Kommata (lk823)  
-- Flavio Gazzetta (fg723)  
+- Flavio Gazzetta (fg723) 
+- Evangelia (Lia) Kommata (lk823)   
 - Nabiha Saqib (ns3323)  
 - Shenghong Liu (sl4223)  
 - Zecheng Zhu (zz4723)  
